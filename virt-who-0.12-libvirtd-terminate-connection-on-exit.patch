@@ -1,0 +1,37 @@
+commit 1a087263d2f82e8c2869e5703ae615d838364cec
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Tue May 26 09:48:47 2015 +0200
+
+    libvirtd: properly terminate libvirt connection on exit
+
+diff --git a/virt/libvirtd/libvirtd.py b/virt/libvirtd/libvirtd.py
+index 22703db..933f236 100644
+--- a/virt/libvirtd/libvirtd.py
++++ b/virt/libvirtd/libvirtd.py
+@@ -162,9 +162,12 @@ class Libvirtd(virt.Virt):
+                 return
+ 
+             while self.time_since_update < self._interval and self.virt.isAlive() == 1:
++                if self.is_terminated():
++                    self._disconnect()
++                    return
+                 self.time_since_update += 1
+                 time.sleep(1)
+-
++        self._disconnect()
+ 
+     def _callback(self, *args, **kwargs):
+         report = self._get_report()
+diff --git a/virtwho.py b/virtwho.py
+index 71110ea..aba8af6 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -232,6 +232,8 @@ class VirtWho(object):
+                 pass
+             self.queue.put("exit")
+         self.terminate_event.set()
++        # Give backends some time to terminate properly
++        time.sleep(1)
+         for virt in self.virts:
+             virt.terminate()
+         self.virt = []

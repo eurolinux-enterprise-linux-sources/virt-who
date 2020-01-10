@@ -1,0 +1,47 @@
+commit 9372655dd6a9f2f58949e24b557efa2e8cca36e0
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Tue May 26 09:01:26 2015 +0200
+
+    Clear the queue before putting exit/reload there
+    
+    Otherwise the backends will be stuck on 'put' and the main process would
+    have to handle all item in the queue first.
+
+diff --git a/virtwho.py b/virtwho.py
+index a682506..71110ea 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -26,6 +26,7 @@ import time
+ from multiprocessing import Event, Queue
+ import json
+ import atexit
++from Queue import Empty
+ 
+ from daemon import daemon
+ from virt import Virt, DomainListReport, HostGuestAssociationReport, ErrorReport
+@@ -223,6 +224,12 @@ class VirtWho(object):
+     def terminate(self):
+         self.logger.debug("virt-who shut down started")
+         if self.queue:
++            # clear the queue and put "exit" there
++            try:
++                while True:
++                    self.queue.get(False)
++            except Empty:
++                pass
+             self.queue.put("exit")
+         self.terminate_event.set()
+         for virt in self.virts:
+@@ -231,6 +238,12 @@ class VirtWho(object):
+ 
+     def reload(self):
+         self.logger.warn("virt-who reload")
++        # clear the queue and put "reload" there
++        try:
++            while True:
++                self.queue.get(False)
++        except Empty:
++            pass
+         self.queue.put("reload")
+ 
+     def getMapping(self):

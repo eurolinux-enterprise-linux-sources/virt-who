@@ -1,0 +1,241 @@
+.TH VIRT-WHO "8" "August 2013" "virt-who"
+.SH NAME
+virt-who - Agent for reporting virtual guest IDs to Subscription Asset Manager, Satellite 6, or Satellite 5.
+.SH SYNOPSIS
+virt-who [-d] [-i INTERVAL] [-b] [-o] [--sam|--satellite] [--libvirt|--vdsm|--esx|--rhevm|--hyperv]
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+show this help message and exit
+.TP
+\fB\-d\fR, \fB\-\-debug\fR
+Enable debugging output
+.TP
+\fB\-b\fR, \fB\-\-background\fR
+Run in the background and monitor virtual guests
+.TP
+\fB\-o\fR, \fB\-\-one\-shot\fR
+Send the list of guest IDs and exit immediately
+.TP
+\fB\-i\fR INTERVAL, \fB\-\-interval\fR=\fIINTERVAL\fR
+Acquire and send list of virtual guest each N seconds
+.TP
+\fB\-p\fR, \fB\-\-print\fR
+Print the host/guests association in JSON format to stdout
+.TP
+\fB\-c\fR, \fB\-\-config\fR
+Use configuration file directly, can be used multiple times. See virt-who-config(5) for details about configuration file format.
+.IP
+.SS Virtualization backend
+.IP
+Choose virtualization backend that should be used to gather host/guest associations
+.TP
+\fB\-\-libvirt\fR
+Use libvirt to list virtual guests [default]
+.TP
+\fB\-\-vdsm\fR
+Use vdsm to list virtual guests
+.TP
+\fB\-\-esx\fR
+Register ESX machines using vCenter
+.TP
+\fB\-\-rhevm\fR
+Register guests using RHEV\-M
+.TP
+\fB\-\-hyperv\fR
+Register guests using Hyper\-V
+.IP
+.SS Subscription manager
+.IP
+Choose where the host/guest associations should be reported
+.TP
+\fB\-\-sam\fR
+Report host/guest associations to the Subscription Asset Manager or Satellite 6 [default]
+.TP
+\fB\-\-satellite\fR
+Report host/guest associations to the Satellite 5
+.IP
+.SS Libvirt options
+.IP
+Use this options with \fB\-\-libvirt\fR
+.TP
+\fB\-\-libvirt\-owner\fR=\fIOWNER\fR
+Organization who has purchased subscriptions of the products, same as current system registration by default
+.TP
+\fB\-\-libvirt\-env\fR=\fIENV\fR
+Environment where the libvirt server belongs to, same as current system registration by default
+.TP
+\fB\-\-libvirt\-server\fR=\fISERVER\fR
+URL of the remote libvirt server to connect to, local server by default
+.TP
+\fB\-\-libvirt\-username\fR=\fIUSERNAME\fR
+Username for connecting to libvirt, username of current user by default
+.TP
+\fB\-\-libvirt\-password\fR=\fIPASSWORD\fR
+Password for connecting to libvirt
+.IP
+.SS vCenter/ESX options
+.IP
+Use this options with \fB\-\-esx\fR
+.TP
+\fB\-\-esx\-owner\fR=\fIOWNER\fR
+Organization who has purchased subscriptions of the products
+.TP
+\fB\-\-esx\-env\fR=\fIENV\fR
+Environment where the vCenter server belongs to
+.TP
+\fB\-\-esx\-server\fR=\fISERVER\fR
+URL of the vCenter server to connect to
+.TP
+\fB\-\-esx\-username\fR=\fIUSERNAME\fR
+Username for connecting to vCenter
+.TP
+\fB\-\-esx\-password\fR=\fIPASSWORD\fR
+Password for connecting to vCenter
+.IP
+.SS RHEV\-M options
+.IP
+Use this options with \fB\-\-rhevm\fR
+.TP
+\fB\-\-rhevm\-owner\fR=\fIOWNER\fR
+Organization who has purchased subscriptions of the products
+.TP
+\fB\-\-rhevm\-env\fR=\fIENV\fR
+Environment where the RHEV\-M belongs to
+.TP
+\fB\-\-rhevm\-server\fR=\fISERVER\fR
+URL of the RHEV\-M server to connect to
+.TP
+\fB\-\-rhevm\-username\fR=\fIUSERNAME\fR
+Username for connecting to RHEV\-M
+.TP
+\fB\-\-rhevm\-password\fR=\fIPASSWORD\fR
+Password for connecting to RHEV\-M
+.IP
+.SS Hyper\-V options
+.IP
+Use this options with \fB\-\-hyperv\fR
+.TP
+\fB\-\-hyperv\-owner\fR=\fIOWNER\fR
+Organization who has purchased subscriptions of the products
+.TP
+\fB\-\-hyperv\-env\fR=\fIENV\fR
+Environment where the Hyper\-V belongs to
+.TP
+\fB\-\-hyperv\-server\fR=\fISERVER\fR
+URL of the Hyper\-V server to connect to
+.TP
+\fB\-\-hyperv\-username\fR=\fIUSERNAME\fR
+Username for connecting to Hyper\-V
+.TP
+\fB\-\-hyperv\-password\fR=\fIPASSWORD\fR
+Password for connecting to Hyper\-V
+.IP
+.SS Satellite options:
+.IP
+Use this options with \fB\-\-satellite\fR
+.TP
+\fB\-\-satellite-server\fR=\fISAT_SERVER
+Satellite server URL
+.TP
+\fB\-\-satellite-username\fR=\fISAT_USERNAME
+Username for connecting to Satellite server
+.TP
+\fB\-\-satellite-password\fR=\fISAT_PASSWORD
+Password for connecting to Satellite server
+.PP
+.SH ENVIRONMENT
+virt-who also reads environmental variables. They have the same name as command line arguments but upper-cased, with underscore instead of dash and prefixed with VIRTWHO_ (e.g. VIRTWHO_ONE_SHOT). Empty variables are considered as disabled, non-empty as enabled
+.SH USAGE
+.SS MODE
+virt-who has three modes how it can run:
+.TP
+1. one-shot mode
+# virt-who -o
+
+In this mode virt-who just sends list of guest UUIDs to the server and exits.
+.TP
+2. interval mode
+# virt-who
+
+This is default mode. virt-who will check and send list of guest UUIDs once per hour. This interval can be changed using "-i INTERVAL" option where INTERVAL is number of seconds how often it should check and send the list.
+.TP
+3. background mode
+# virt-who -b
+
+This mode is similar to interval mode but it monitors events from libvirt and update list of guest UUIDs as soon as possible. It also does the interval check (interval can be altered by "-i INTERVAL" option).
+.IP
+NOTE: virt-who don't print anything to terminal in this mode
+.IP
+NOTE: monitoring for events requires libvirt backend, but this mode can be used with all backends.
+
+.SS VIRTUALIZATION BACKEND
+
+virt-who can use couple of virtualization backends.
+.TP
+1. libvirt
+# virt-who
+
+# virt-who --libvirt
+
+Use libvirt as virtualization backend. This is default.
+.IP
+
+NOTE: virt-who can monitor for events only in this mode.
+.TP
+2. vdsm
+# virt-who --vdsm
+
+Use vdsm as virtualization backend.
+.TP
+3. ESX
+
+# virt-who --esx --esx-owner=ESX_OWNER  --esx-env=ESX_ENV --esx-server=ESX_SERVER --esx-username=ESX_USERNAME --esx-password=ESX_PASSWORD
+
+Use ESX (vCenter) as virtualization backend and specify option required to connect to ESX server.
+
+.TP
+4. RHEV-M
+
+# virt-who --rhevm --rhevm-owner=RHEVM_OWNER  --rhevm-env=RHEVM_ENV --rhevm-server=RHEVM_SERVER --rhevm-username=RHEVM_USERNAME --rhevm-password=RHEVM_PASSWORD
+
+Use RHEV-M as virtualization backend and specify option required to connect to RHEV-M server.
+
+.TP
+5. Hyper-V
+
+# virt-who --hyperv --hyperv-owner=HYPERV_OWNER  --hyperv-env=HYPERV_ENV --hyperv-server=HYPERV_SERVER --hyperv-username=HYPERV_USERNAME --hyperv-password=HYPERV_PASSWORD
+
+Use Hyper-V as virtualization backend and specify option required to connect to Hyper-V server.
+
+.TP
+6. Fake
+
+Fake virtualization backend fetches the host/guests association from file. This can be useful in environments where the hypervisor is not accessible by virt-who.
+It's only available through configuration file, see virt-who-config(5) for details about configuration of this backend.
+
+
+.SS SUBSCRIPTION MANAGER
+
+virt-who can report host/guest associations either to Subscription Asset Manager (SAM), Satellite 6, or Satellite 5.
+.TP
+1. Subscription Asset Manager or Satellite 6
+# virt-who
+
+# virt-who --sam
+
+System must be registered using subscription-manager prior to using virt-who. Configuration for connecting to SAM is shared between subscription-manager and virt-who. This is default.
+
+.TP
+2. Satellite 5
+# virt-who --satellite --satellite-server=SAT_SERVER --satellite-username=SAT_USERNAME --satellite-password=SAT_PASSWORD
+
+This option can't be used for monitoring local guests, use rhn-virtualization-host instead.
+
+.SH LOGGING
+virt-who always writes error output to file /var/log/rhsm/rhsm.log. In all modes, excluding background ("-b"), it writes same output also to the standard error output.
+
+virt-who can be started with option "-d" in all modes and with all backends. This option will enable verbose output with more information.
+
+.SH AUTHOR
+Radek Novacek <rnovacek at redhat dot com>

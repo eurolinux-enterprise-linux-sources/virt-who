@@ -1,0 +1,23 @@
+commit 9f26f7f69c54b5d3d9417a9d7e6323f5ba6ed0f0
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Tue May 5 15:58:01 2015 +0200
+
+    Log the result in print mode
+
+diff --git a/virtwho.py b/virtwho.py
+index 00eb10c..4d28a99 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -571,9 +571,11 @@ def _main(virtWho):
+                         'guests': guests
+                     }
+                     hypervisors.append(h)
+-        print json.dumps({
++        data = json.dumps({
+             'hypervisors': hypervisors
+         })
++        virtWho.logger.debug("Associations found: %s" % data)
++        print data
+ 
+ 
+ if __name__ == '__main__':

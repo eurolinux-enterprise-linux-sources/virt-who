@@ -1,0 +1,22 @@
+commit c0d33ab4f08bc33c2fd9bc35474db0dd37ae74af
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Tue Mar 17 13:00:46 2015 +0100
+
+    esx: don't fail with URLError on timeout
+    
+    Timeout in WaitForUpdatesEx function doesn't throw socker.error in
+    python2.6, but URLError. Catch both of them.
+
+diff --git a/virt/esx/esx.py b/virt/esx/esx.py
+index 2292cec..a21b418 100644
+--- a/virt/esx/esx.py
++++ b/virt/esx/esx.py
+@@ -90,7 +90,7 @@ class Esx(virt.Virt):
+ 
+             try:
+                 updateSet = self.client.service.WaitForUpdatesEx(_this=self.sc.propertyCollector, version=version)
+-            except socket.error:
++            except (socket.error, URLError):
+                 self.logger.debug("Wait for ESX event finished, timeout")
+                 # Cancel the update
+                 try:

@@ -1,0 +1,18 @@
+commit 66287da51bcb6dcb8b8149c1fa38b29cdf2b6639
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Tue May 26 09:01:57 2015 +0200
+
+    rhevm: don't throw an exception when host doesn't have hardware uuid
+
+diff --git a/virt/rhevm/rhevm.py b/virt/rhevm/rhevm.py
+index d2d5f2a..b774075 100644
+--- a/virt/rhevm/rhevm.py
++++ b/virt/rhevm/rhevm.py
+@@ -88,6 +88,7 @@ class RhevM(virt.Virt):
+                     host_ids[id] = host.find('hardware_information').find('uuid').text
+                 except AttributeError:
+                     self.logger.warn("Host %s doesn't have hardware uuid", id)
++                    continue
+             elif self.config.hypervisor_id == 'hostname':
+                 host_ids[id] = host.find('name').text
+             else:

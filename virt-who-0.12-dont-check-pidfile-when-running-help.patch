@@ -1,0 +1,33 @@
+commit 98c1e4393e8d993145ab5e0eabeb30c57450d18c
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Thu Apr 9 13:56:00 2015 +0200
+
+    Don't check for pidfile when running --help
+
+diff --git a/virtwho.py b/virtwho.py
+index 61179ea..f6348a1 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -461,17 +461,17 @@ class PIDLock(object):
+ virtWho = None
+ 
+ def main():
+-    lock = PIDLock(PIDFILE)
+-    if lock.is_locked():
+-        print >>sys.stderr, "virt-who seems to be already running. If not, remove %s" % PIDFILE
+-        sys.exit(1)
+-
+     try:
+         logger, options = parseOptions()
+     except OptionError as e:
+         print >>sys.stderr, str(e)
+         sys.exit(1)
+ 
++    lock = PIDLock(PIDFILE)
++    if lock.is_locked():
++        print >>sys.stderr, "virt-who seems to be already running. If not, remove %s" % PIDFILE
++        sys.exit(1)
++
+     def atexit_fn():
+         global virtWho
+         virtWho.terminate()

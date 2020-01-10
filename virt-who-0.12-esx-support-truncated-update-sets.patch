@@ -1,0 +1,20 @@
+commit a341a0ceed46eaa74c14f8a2684ab8d8b1a9bbd7
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Tue Apr 7 11:55:00 2015 +0200
+
+    ESX: support truncated update sets
+
+diff --git a/virt/esx/esx.py b/virt/esx/esx.py
+index bd30803..ad84666 100644
+--- a/virt/esx/esx.py
++++ b/virt/esx/esx.py
+@@ -110,6 +110,9 @@ class Esx(virt.Virt):
+                 version = updateSet.version
+                 self.applyUpdates(updateSet)
+ 
++            if hasattr(updateSet, 'truncated') and updateSet.truncated:
++                continue
++
+             assoc = self.getHostGuestMapping()
+             self._queue.put(virt.HostGuestAssociationReport(self.config, assoc))
+             end_time = datetime.now()

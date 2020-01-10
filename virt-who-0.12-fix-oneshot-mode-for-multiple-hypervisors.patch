@@ -1,0 +1,128 @@
+commit bb00b1495cf55f7f606e16d08a56d3b4d594de98
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Thu Apr 30 08:31:14 2015 +0200
+
+    Fix oneshot mode for multiple hypervisors
+
+diff --git a/tests/test_virtwho.py b/tests/test_virtwho.py
+index 4d06ce2..958dffd 100644
+--- a/tests/test_virtwho.py
++++ b/tests/test_virtwho.py
+@@ -160,6 +160,7 @@ class TestOptions(TestBase):
+         options.oneshot = True
+         options.interval = 0
+         options.print_ = False
++        fromConfig.return_value.config.name = 'test'
+         virtwho = VirtWho(self.logger, options, config_dir="/nonexistant")
+         config = Config("test", "esx", "localhost", "username", "password", "owner", "env")
+         virtwho.configManager.addConfig(config)
+diff --git a/virt/__init__.py b/virt/__init__.py
+index 79926a1..94f5356 100644
+--- a/virt/__init__.py
++++ b/virt/__init__.py
+@@ -1,8 +1,8 @@
+ 
+ 
+ from virt import (Virt, VirtError, Domain, AbstractVirtReport, DomainListReport,
+-    HostGuestAssociationReport, HypervisorInfoReport)
++    HostGuestAssociationReport, HypervisorInfoReport, ErrorReport)
+ 
+ __all__ = ['Virt', 'VirtError', 'Domain', 'AbstractVirtReport',
+            'DomainListReport', 'HostGuestAssociationReport',
+-           'HypervisorInfoReport']
++           'HypervisorInfoReport', 'ErrorReport']
+diff --git a/virt/virt.py b/virt/virt.py
+index 34b3425..fe47f0a 100644
+--- a/virt/virt.py
++++ b/virt/virt.py
+@@ -56,6 +56,12 @@ class AbstractVirtReport(object):
+     def config(self):
+         return self._config
+ 
++class ErrorReport(AbstractVirtReport):
++    '''
++    Report that virt backend fails. Used in oneshot mode to inform
++    main process that now data are coming.
++    '''
++
+ class DomainListReport(AbstractVirtReport):
+     '''
+     Report from virt backend about list of virtual guests on given system.
+@@ -212,7 +218,7 @@ class Virt(Process):
+                     self.logger.exception("Virt backend '%s' fails with exception:" % self.config.name)
+ 
+                 if self._oneshot:
+-                    self._queue.put(None)
++                    self._queue.put(ErrorReport(self.config))
+                     return
+ 
+                 if self._terminate_event.is_set():
+diff --git a/virtwho.py b/virtwho.py
+index 98d8956..00eb10c 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -28,7 +28,7 @@ import json
+ import atexit
+ 
+ from daemon import daemon
+-from virt import Virt, DomainListReport, HostGuestAssociationReport
++from virt import Virt, DomainListReport, HostGuestAssociationReport, ErrorReport
+ from manager import Manager, ManagerError, ManagerFatalError
+ from config import Config, ConfigManager
+ from password import InvalidKeyFile
+@@ -159,7 +159,7 @@ class VirtWho(object):
+             self.virts.append(virt)
+ 
+         if self.options.oneshot:
+-            oneshot_remaining = len(self.virts)
++            oneshot_remaining = set(virt.config.name for virt in self.virts)
+ 
+         if len(self.virts) == 0:
+             self.logger.error("No suitable virt backend found")
+@@ -181,25 +181,29 @@ class VirtWho(object):
+                 self.virts = []
+                 raise ReloadRequest()
+ 
+-
+-            if report is not None:
+-                # None means that there was some error in the backend
+-
+-                # Send the report
+-                if self.options.print_:
+-                    result[report.config] = report
+-                else:
+-                    try:
+-                        self.send(report)
+-                    except ManagerFatalError:
+-                        # System not register (probably), stop the backends
+-                        for virt in self.virts:
+-                            virt.terminate()
+-                        self.virts = []
++            # Send the report
++            if not self.options.print_ and not isinstance(report, ErrorReport):
++                try:
++                    self.send(report)
++                except ManagerFatalError:
++                    # System not register (probably), stop the backends
++                    for virt in self.virts:
++                        virt.terminate()
++                    self.virts = []
+ 
+             if self.options.oneshot:
+-                oneshot_remaining -= 1
+-                if oneshot_remaining == 0:
++                try:
++                    oneshot_remaining.remove(report.config.name)
++                    if not isinstance(report, ErrorReport):
++                        if self.options.print_:
++                            result[report.config] = report
++                        self.logger.debug("Association for config %s gathered" % report.config.name)
++                    for virt in self.virts:
++                        if virt.config.name == report.config.name:
++                            virt.terminate()
++                except KeyError:
++                    self.logger.debug("Association for config %s already gathered, ignoring" % report.config.name)
++                if not oneshot_remaining:
+                     break
+ 
+         self.queue = None

@@ -1,0 +1,238 @@
+commit b4a12c4e095f5d5376029e295d4bc28f05c22833
+Author: William Poteat <wpoteat@redhat.com>
+Date:   Tue Mar 10 10:48:25 2015 -0400
+
+    1118064: Update options for Satellite naming
+    
+    Added named options to config and cli for satellite 5 and 6.
+    satellite 6 maps to sam.
+    satellite 5 maps to satellite.
+    satellite remains a cli option but is not advertised.
+
+diff --git a/README b/README
+index 44b8a9d..6a65533 100644
+--- a/README
++++ b/README
+@@ -27,7 +27,11 @@ SAM and Satellite 6:
+     It uses rhsm configuration (usually in /etc/rhsm/rhsm.conf). The system
+     needs to be registered in subscription-manager server before running
+     the agent.
+-Satellite 5:
++
++Satellite6:
++    It will behave in the same manner as SAM.
++
++Satellite5:
+     Configuration is stored in virt-who configuration file:
+     /etc/sysconfig/virt-who
+ 
+diff --git a/virt-who.8 b/virt-who.8
+index a72b847..3391822 100644
+--- a/virt-who.8
++++ b/virt-who.8
+@@ -2,7 +2,7 @@
+ .SH NAME
+ virt-who - Agent for reporting virtual guest IDs to Subscription Asset Manager, Satellite 6, or Satellite 5.
+ .SH SYNOPSIS
+-virt-who [-d] [-i INTERVAL] [-b] [-o] [--sam|--satellite] [--libvirt|--vdsm|--esx|--rhevm|--hyperv]
++virt-who [-d] [-i INTERVAL] [-b] [-o] [--sam|--satellite5|--satellite6] [--libvirt|--vdsm|--esx|--rhevm|--hyperv]
+ .SH OPTIONS
+ .TP
+ \fB\-h\fR, \fB\-\-help\fR
+@@ -52,8 +52,11 @@ Choose where the host/guest associations should be reported
+ \fB\-\-sam\fR
+ Report host/guest associations to the Subscription Asset Manager or Satellite 6 [default]
+ .TP
+-\fB\-\-satellite\fR
+-Report host/guest associations to the Satellite 5
++\fB\-\-satellite5\fR
++Report host/guest associations to the Satellite 5 server
++.IP
++\fB\-\-satellite6\fR
++Report host/guest associations to the Satellite 6 server
+ .IP
+ .SS Libvirt options
+ .IP
+@@ -131,9 +134,9 @@ Username for connecting to Hyper\-V
+ \fB\-\-hyperv\-password\fR=\fIPASSWORD\fR
+ Password for connecting to Hyper\-V
+ .IP
+-.SS Satellite options:
++.SS Satellite 5 options:
+ .IP
+-Use this options with \fB\-\-satellite\fR
++Use this options with \fB\-\-satellite5\fR
+ .TP
+ \fB\-\-satellite-server\fR=\fISAT_SERVER
+ Satellite server URL
+@@ -217,7 +220,7 @@ It's only available through configuration file, see virt-who-config(5) for detai
+ 
+ .SS SUBSCRIPTION MANAGER
+ 
+-virt-who can report host/guest associations either to Subscription Asset Manager (SAM), Satellite 6, or Satellite 5.
++virt-who can report host/guest associations to Subscription Asset Manager (SAM), to Satellite 5, or to Satellite 6.
+ .TP
+ 1. Subscription Asset Manager or Satellite 6
+ # virt-who
+@@ -227,8 +230,16 @@ virt-who can report host/guest associations either to Subscription Asset Manager
+ System must be registered using subscription-manager prior to using virt-who. Configuration for connecting to SAM is shared between subscription-manager and virt-who. This is default.
+ 
+ .TP
++2. Satellite 6
++
++# virt-who --satellite6
++
++System must be registered using subscription-manager prior to using virt-who. Configuration for connecting to Satellite 6 is shared between subscription-manager and virt-who.
++
++.TP
+ 2. Satellite 5
+-# virt-who --satellite --satellite-server=SAT_SERVER --satellite-username=SAT_USERNAME --satellite-password=SAT_PASSWORD
++
++# virt-who --satellite5 --satellite-server=SAT_SERVER --satellite-username=SAT_USERNAME --satellite-password=SAT_PASSWORD
+ 
+ This option can't be used for monitoring local guests, use rhn-virtualization-host instead.
+ 
+diff --git a/virt-who.conf b/virt-who.conf
+index 2f5c95d..ca7350e 100644
+--- a/virt-who.conf
++++ b/virt-who.conf
+@@ -21,11 +21,15 @@ VIRTWHO_DEBUG=0
+ # configuration.
+ #VIRTWHO_INTERVAL=0
+ 
+-# virt-who subscription manager backend, enable ony one option from following 2:
+-# Report to Subscription Asset Manager (SAM), the Red Hat Customer Portal, or Satellite 6
+-#VIRTWHO_SAM=1
+-# Report to Satellite 5
+-#VIRTWHO_SATELLITE=0
++# Virt-who subscription manager backend. Enable only one option from the following:
++# Report to Subscription Asset Manager (SAM) or the Red Hat Customer Portal
++# VIRTWHO_SAM=1
++# Report to Sattellite version 6
++# VIRTWHO_SATELLITE6=0
++# Report to Satellite verision 5
++# VIRTWHO_SATELLITE5=0
++# Report to Satellite [Legacy]
++# VIRTWHO_SATELLITE=0
+ 
+ # virt-who mode, enable only one option from following 5:
+ # Use libvirt to list virtual guests [default]
+diff --git a/virtwho.py b/virtwho.py
+index 564f93b..cbea034 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -33,7 +33,7 @@ from config import Config, ConfigManager
+ 
+ import log
+ 
+-from optparse import OptionParser, OptionGroup
++from optparse import OptionParser, OptionGroup, SUPPRESS_HELP
+ 
+ 
+ class OptionParserEpilog(OptionParser):
+@@ -60,6 +60,8 @@ RetryInterval = 60 # One minute
+ DefaultInterval = 3600 # Once per hour
+ 
+ PIDFILE = "/var/run/virt-who.pid"
++SAT5 = "satellite"
++SAT6 = "sam"
+ 
+ 
+ class VirtWho(object):
+@@ -191,7 +193,7 @@ class OptionError(Exception):
+     pass
+ 
+ def parseOptions():
+-    parser = OptionParserEpilog(usage="virt-who [-d] [-i INTERVAL] [-b] [-o] [--sam|--satellite] [--libvirt|--vdsm|--esx|--rhevm|--hyperv]",
++    parser = OptionParserEpilog(usage="virt-who [-d] [-i INTERVAL] [-b] [-o] [--sam|--satellite5|--satellite6] [--libvirt|--vdsm|--esx|--rhevm|--hyperv]",
+                                 description="Agent for reporting virtual guest IDs to subscription manager",
+                                 epilog="virt-who also reads enviromental variables. They have the same name as command line arguments but uppercased, with underscore instead of dash and prefixed with VIRTWHO_ (e.g. VIRTWHO_ONE_SHOT). Empty variables are considered as disabled, non-empty as enabled")
+     parser.add_option("-d", "--debug", action="store_true", dest="debug", default=False, help="Enable debugging output")
+@@ -210,11 +212,13 @@ def parseOptions():
+     parser.add_option_group(virtGroup)
+ 
+     managerGroup = OptionGroup(parser, "Subscription manager", "Choose where the host/guest associations should be reported")
+-    managerGroup.add_option("--sam", action="store_const", dest="smType", const="sam", default="sam", help="Report host/guest associations to the Subscription Asset Manager or Satellite 6 [default]")
+-    managerGroup.add_option("--satellite", action="store_const", dest="smType", const="satellite", help="Report host/guest associations to the Satellite 5")
++    managerGroup.add_option("--sam", action="store_const", dest="smType", const=SAT6, default=SAT6, help="Report host/guest associations to the Subscription Asset Manager [default]")
++    managerGroup.add_option("--satellite6", action="store_const", dest="smType", const=SAT6, help="Report host/guest associations to the Satellite 6 server")
++    managerGroup.add_option("--satellite5", action="store_const", dest="smType", const=SAT5, help="Report host/guest associations to the Satellite 5 server")
++    managerGroup.add_option("--satellite", action="store_const", dest="smType", const=SAT5, help=SUPPRESS_HELP)
+     parser.add_option_group(managerGroup)
+ 
+-    libvirtGroup = OptionGroup(parser, "Libvirt options", "Use this options with --libvirt")
++    libvirtGroup = OptionGroup(parser, "Libvirt options", "Use these options with --libvirt")
+     libvirtGroup.add_option("--libvirt-owner", action="store", dest="owner", default="", help="Organization who has purchased subscriptions of the products, default is owner of current system")
+     libvirtGroup.add_option("--libvirt-env", action="store", dest="env", default="", help="Environment where the vCenter server belongs to, default is environment of current system")
+     libvirtGroup.add_option("--libvirt-server", action="store", dest="server", default="", help="URL of the libvirt server to connect to, default is empty for libvirt on local computer")
+@@ -222,7 +226,7 @@ def parseOptions():
+     libvirtGroup.add_option("--libvirt-password", action="store", dest="password", default="", help="Password for connecting to the libvirt daemon")
+     parser.add_option_group(libvirtGroup)
+ 
+-    esxGroup = OptionGroup(parser, "vCenter/ESX options", "Use this options with --esx")
++    esxGroup = OptionGroup(parser, "vCenter/ESX options", "Use these options with --esx")
+     esxGroup.add_option("--esx-owner", action="store", dest="owner", default="", help="Organization who has purchased subscriptions of the products")
+     esxGroup.add_option("--esx-env", action="store", dest="env", default="", help="Environment where the vCenter server belongs to")
+     esxGroup.add_option("--esx-server", action="store", dest="server", default="", help="URL of the vCenter server to connect to")
+@@ -230,7 +234,7 @@ def parseOptions():
+     esxGroup.add_option("--esx-password", action="store", dest="password", default="", help="Password for connecting to vCenter")
+     parser.add_option_group(esxGroup)
+ 
+-    rhevmGroup = OptionGroup(parser, "RHEV-M options", "Use this options with --rhevm")
++    rhevmGroup = OptionGroup(parser, "RHEV-M options", "Use these options with --rhevm")
+     rhevmGroup.add_option("--rhevm-owner", action="store", dest="owner", default="", help="Organization who has purchased subscriptions of the products")
+     rhevmGroup.add_option("--rhevm-env", action="store", dest="env", default="", help="Environment where the RHEV-M belongs to")
+     rhevmGroup.add_option("--rhevm-server", action="store", dest="server", default="", help="URL of the RHEV-M server to connect to (preferable use secure connection - https://<ip or domain name>:<secure port, usually 8443>)")
+@@ -238,7 +242,7 @@ def parseOptions():
+     rhevmGroup.add_option("--rhevm-password", action="store", dest="password", default="", help="Password for connecting to RHEV-M")
+     parser.add_option_group(rhevmGroup)
+ 
+-    hypervGroup = OptionGroup(parser, "Hyper-V options", "Use this options with --hyperv")
++    hypervGroup = OptionGroup(parser, "Hyper-V options", "Use these options with --hyperv")
+     hypervGroup.add_option("--hyperv-owner", action="store", dest="owner", default="", help="Organization who has purchased subscriptions of the products")
+     hypervGroup.add_option("--hyperv-env", action="store", dest="env", default="", help="Environment where the Hyper-V belongs to")
+     hypervGroup.add_option("--hyperv-server", action="store", dest="server", default="", help="URL of the Hyper-V server to connect to")
+@@ -246,7 +250,7 @@ def parseOptions():
+     hypervGroup.add_option("--hyperv-password", action="store", dest="password", default="", help="Password for connecting to Hyper-V")
+     parser.add_option_group(hypervGroup)
+ 
+-    satelliteGroup = OptionGroup(parser, "Satellite options", "Use this options with --satellite")
++    satelliteGroup = OptionGroup(parser, "Satellite 5 options", "Use these options with --satellite5")
+     satelliteGroup.add_option("--satellite-server", action="store", dest="sat_server", default="", help="Satellite server URL")
+     satelliteGroup.add_option("--satellite-username", action="store", dest="sat_username", default="", help="Username for connecting to Satellite server")
+     satelliteGroup.add_option("--satellite-password", action="store", dest="sat_password", default="", help="Password for connecting to Satellite server")
+@@ -282,11 +286,19 @@ def parseOptions():
+ 
+     env = os.getenv("VIRTWHO_SAM", "0").strip().lower()
+     if env in ["1", "true"]:
+-        options.smType = "sam"
++        options.smType = SAT6
++
++    env = os.getenv("VIRTWHO_SATELLITE6", "0").strip().lower()
++    if env in ["1", "true"]:
++        options.smType = SAT6
++
++    env = os.getenv("VIRTWHO_SATELLITE5", "0").strip().lower()
++    if env in ["1", "true"]:
++        options.smType = SAT5
+ 
+     env = os.getenv("VIRTWHO_SATELLITE", "0").strip().lower()
+     if env in ["1", "true"]:
+-        options.smType = "satellite"
++        options.smType = SAT5
+ 
+     env = os.getenv("VIRTWHO_LIBVIRT", "0").strip().lower()
+     if env in ["1", "true"]:
+@@ -316,10 +328,10 @@ def parseOptions():
+         if len(option) == 0:
+             option = os.getenv(variable, "").strip()
+         if required and len(option) == 0:
+-            raise OptionError("Required parameter '%s' is not set, exitting" % name)
++            raise OptionError("Required parameter '%s' is not set, exiting" % name)
+         return option
+ 
+-    if options.smType == "satellite":
++    if options.smType == SAT5:
+         options.sat_server = checkEnv("VIRTWHO_SATELLITE_SERVER", options.sat_server, "satellite-server")
+         options.sat_username = checkEnv("VIRTWHO_SATELLITE_USERNAME", options.sat_username, "satellite-username")
+         if len(options.sat_password) == 0:
