@@ -19,18 +19,27 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
 import os
-import logging
 from csv import reader
 
 from ConfigParser import SafeConfigParser, NoOptionError, Error, MissingSectionHeaderError
 from password import Password
 from binascii import unhexlify
+import hashlib
+import json
+import util
 
 VIRTWHO_CONF_DIR = "/etc/virt-who.d/"
 VIRTWHO_TYPES = ("libvirt", "vdsm", "esx", "rhevm", "hyperv", "fake")
+VIRTWHO_GENERAL_CONF_PATH = "/etc/virt-who.conf"
+VIRTWHO_GLOBAL_SECTION_NAME = "global"
+VIRTWHO_VIRT_DEFAULTS_SECTION_NAME = "defaults"
 
 
 class InvalidOption(Error):
+    pass
+
+
+class InvalidPasswordFormat(Exception):
     pass
 
 
@@ -38,125 +47,231 @@ def parse_list(s):
     '''
     Parse comma-separated list of items that might be in double-quotes to the list of strings
     '''
-    return reader([s]).next()
+    def strip_quote(s):
+        if s[0] == s[-1] == "'":
+            return s[1:-1]
+        return s
+    return map(strip_quote, reader([s.strip(' ')], skipinitialspace=True).next())
 
-class Config(object):
-    def __init__(self, name, type, server=None, username=None, password=None, owner=None, env=None, rhsm_username=None, rhsm_password=None):
-        self._name = name
-        self._type = type
-        if self._type not in VIRTWHO_TYPES:
-            raise InvalidOption('Invalid type "%s", must be one of following %s' % (self._type, ", ".join(VIRTWHO_TYPES)))
-        if server is None and self._type == 'libvirt':
-            self._server = ''
+
+class NotSetSentinel(object):
+    """
+    An empty object subclass that is meant to be used in place of 'None'.
+    We might want to set a config value to 'None'
+    """
+    pass
+
+
+class GeneralConfig(object):
+    # This dictionary should be filled in for subclasses with option_name: default_value
+    DEFAULTS = {}
+    # options that are lists should be placed here in subclasses
+    LIST_OPTIONS = ()
+    # boolean options should be listed here
+    BOOL_OPTIONS = ()
+    INT_OPTIONS = ()
+
+    def __init__(self, defaults=None, **kwargs):
+        options = self.DEFAULTS.copy()
+        options.update(defaults or {})
+        options.update(kwargs)
+        # setting the attribute the normal way causes
+        # a reference to the dictionary to appear
+        self.__dict__['_options'] = options
+
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            super(GeneralConfig, self).__getattr__(name)
+
+        value = self._options.get(name, None)
+        if value is None:
+            if name in self.DEFAULTS:
+                return self.DEFAULTS[name]
+            else:
+                return None
+        if name in self.BOOL_OPTIONS:
+            return str(value).lower() not in ("0", "false", "no")
+        if name in self.LIST_OPTIONS:
+            if not isinstance(value, list):
+                return parse_list(value)
+            else:
+                return value
+        if name in self.INT_OPTIONS:
+            return int(value)
+        return value
+
+    def __setattr__(self, name, value):
+        if isinstance(value, NotSetSentinel):
+            return
+        if name.startswith('_'):
+            super(GeneralConfig, self).__setattr__(name, value)
         else:
-            self._server = server
-        self._username = username
-        self._password = password
-        self._owner = owner
-        self._env = env
-        self._rhsm_username = rhsm_username
-        self._rhsm_password = rhsm_password
+            self._options[name] = value
 
-        self.filter_host_uuids = []
-        self.exclude_host_uuids = []
+    def keys(self):
+        return self.__dict__['_options'].keys()
 
-        # Optional options for backends
-        self.filter_host_parents = []
-        self.exclude_host_parents = []
-        self.esx_simplified_vim = True
-        self.fake_is_hypervisor = True
-        self.fake_file = None
+    def update(self, **kwargs):
+        '''
+        Update _options with the kwargs
+        '''
+        self.__dict__['_options'].update([(k, v) for k, v in kwargs.iteritems() if not isinstance(v, NotSetSentinel)])
+
+    def __getitem__(self, name):
+        return self._options[name]
+
+    def __setitem__(self, name, value):
+        if isinstance(value, NotSetSentinel):
+            return
+        self._options[name] = value
+
+    def __delitem__(self, name):
+        del self._options[name]
+
+    def __contains__(self, name):
+        return name in self._options
 
     @classmethod
-    def fromParser(self, name, parser):
-        type = parser.get(name, "type").lower()
-        server = username = password = owner = env = \
-            rhsm_username = rhsm_password = None
+    def fromFile(cls, filename, logger):
+        raise NotImplementedError()
+
+
+class GlobalConfig(GeneralConfig):
+    """
+    This GeneralConfig subclass represents the config file
+    that holds the global values used to control virt-who's
+    operation.
+    """
+    DEFAULTS = {
+        'debug': False,
+        'oneshot': False,
+        'print_': False,
+        'log_per_config': False,
+        'background': False,
+        'configs': '',
+        'reporter_id': util.generateReporterId(),
+        'smType': 'sam',
+        'interval': 60
+    }
+    LIST_OPTIONS = (
+        'configs',
+    )
+    BOOL_OPTIONS = (
+        'debug',
+        'oneshot',
+        'background',
+        'print_'
+        'log_per_config'
+    )
+    INT_OPTIONS = (
+        'interval',
+    )
+
+    @classmethod
+    def fromFile(cls, filename, logger=None):
+        global_config = parseFile(filename, logger=logger).get(VIRTWHO_GLOBAL_SECTION_NAME)
+        if not global_config:
+            if logger:
+                logger.warning(
+                    'Unable to find "%s" section in general config file: "%s"\nWill use defaults where required',
+                    VIRTWHO_GLOBAL_SECTION_NAME, filename)
+            global_config = {}
+        return cls(**global_config)
+
+
+class Config(GeneralConfig):
+    DEFAULTS = {
+        'simplified_vim': True,
+        'hypervisor_id': 'uuid',
+    }
+    LIST_OPTIONS = (
+        'filter_host_uuids',
+        'exclude_host_uuids',
+        'filter_host_parents'
+        'exclude_host_parents',
+    )
+    BOOL_OPTIONS = (
+        'is_hypervisor',
+        'simplified_vim',
+    )
+
+    def __init__(self, name, type, defaults=None, **kwargs):
+        super(Config, self).__init__(defaults=defaults, **kwargs)
+        self._name = name
+        self._type = type
+
+        if self._type not in VIRTWHO_TYPES:
+            raise InvalidOption('Invalid type "%s", must be one of following %s' %
+                                (self._type, ", ".join(VIRTWHO_TYPES)))
+
+    @property
+    def smType(self):
         try:
-            server = parser.get(name, "server")
-        except NoOptionError:
-            # Use '' as libvirt url when not given, for backward compatibility
-            if type in ['libvirt', 'vdsm', 'fake']:
-                server = ''
+            return self._options['smType']
+        except KeyError:
+            if 'sat_server' in self._options:
+                return 'satellite'
             else:
-                raise
-        try:
-            username = parser.get(name, "username")
-        except NoOptionError:
-            username = None
+                return 'sam'
 
-        try:
-            password = parser.get(name, "password")
-        except NoOptionError:
-            password = None
-        if password is None:
-            try:
-                crypted = parser.get(name, "encrypted_password")
-                password = Password.decrypt(unhexlify(crypted))
-            except NoOptionError:
-                password = None
+    def checkOptions(self, logger):
+        # Server option must be there for ESX, RHEVM, and HYPERV
+        if 'server' not in self._options:
+            if self.type in ['libvirt', 'vdsm', 'fake']:
+                self._options['server'] = ''
+            else:
+                raise InvalidOption("Option `server` needs to be set in config `%s`" % (self.name))
 
-        try:
-            owner = parser.get(name, "owner")
-        except NoOptionError:
-            owner = None
-        try:
-            env = parser.get(name, "env")
-        except NoOptionError:
-            env = None
+        # Check for env and owner options, it must be present for SAM
+        if (self.smType is not None and self.smType == 'sam' and (
+                (self.type in ('esx', 'rhevm', 'hyperv')) or
+                (self.type == 'libvirt' and self.server) or
+                (self.type == 'fake' and self.fake_is_hypervisor))):
 
-        try:
-            rhsm_username = parser.get(name, "rhsm_username")
-        except NoOptionError:
-            rhsm_username = None
+            if not self.env:
+                raise InvalidOption("Option `env` needs to be set in config `%s`" % (self.name))
+            elif not self.owner:
+                raise InvalidOption("Option `owner` needs to be set in config `%s`" % (self.name))
 
-        try:
-            rhsm_password = parser.get(name, "rhsm_password")
-        except NoOptionError:
-            rhsm_password = None
+        if self.type != 'esx':
+            if self.filter_host_parents is not None:
+                logger.warn("filter_host_parents is not supported in %s mode, ignoring it", self.type)
+            if self.exclude_host_parents is not None:
+                logger.warn("exclude_host_parents is not supported in %s mode, ignoring it", self.type)
 
-        # Only attempt to get the encrypted rhsm password if we have a username:
-        if rhsm_username is not None and rhsm_password is None:
-            try:
-                crypted = parser.get(name, "rhsm_encrypted_password")
-                rhsm_password = Password.decrypt(unhexlify(crypted))
-            except NoOptionError:
-                rhsm_password = None
+        if self.type != 'fake':
+            if self.is_hypervisor is not None:
+                logger.warn("is_hypervisor is not supported in %s mode, ignoring it", self.type)
+        else:
+            if not self.fake_is_hypervisor:
+                if self.env:
+                    logger.warn("Option `env` is not used in non-hypervisor fake mode")
+                if self.owner:
+                    logger.warn("Option `owner` is not used in non-hypervisor fake mode")
 
-        config = Config(name, type, server, username, password, owner, env, rhsm_username, rhsm_password)
+        if self.type == 'libvirt':
+            if self.server is not None and self.server != '':
+                if ('ssh://' in self.server or '://' not in self.server) and self.password:
+                    logger.warn("Password authentication doesn't work with ssh transport on libvirt backend, "
+                                "copy your public ssh key to the remote machine")
+            else:
+                if self.env:
+                    logger.warn("Option `env` is not used in non-remote libvirt connection")
+                if self.owner:
+                    logger.warn("Option `owner` is not used in non-remote libvirt connection")
 
-        try:
-            config.filter_host_uuids = parse_list(parser.get(name, "filter_host_uuids"))
-        except NoOptionError:
-            config.filter_host_uuids = []
-
-        try:
-            config.exclude_host_uuids = parse_list(parser.get(name, "exclude_host_uuids"))
-        except NoOptionError:
-            config.exclude_host_uuids = []
-
-        if type == 'esx':
-            try:
-                config.esx_simplified_vim = parser.get(name, "simplified_vim").lower() not in ("0", "false", "no")
-            except NoOptionError:
-                pass
-            try:
-                config.filter_host_parents = parse_list(parser.get(name, "filter_host_parents"))
-            except NoOptionError:
-                config.filter_host_parents = []
-
-            try:
-                config.exclude_host_parents = parse_list(parser.get(name, "exclude_host_parents"))
-            except NoOptionError:
-                config.exclude_host_parents = []
-        elif type == 'fake':
-            try:
-                config.fake_is_hypervisor = parser.get(name, "is_hypervisor").lower() not in ("0", "false", "no")
-            except NoOptionError:
-                pass
-            config.fake_file = parser.get(name, "file")
-
+    @classmethod
+    def fromParser(self, name, parser, defaults=None):
+        options = {}
+        for option in parser.options(name):
+            options[option] = parser.get(name, option)
+        type = options.pop('type').lower()
+        config = Config(name, type, defaults, **options)
         return config
+
+    @property
+    def hash(self):
+        return hashlib.md5(json.dumps(self.__dict__, sort_keys=True)).hexdigest()
 
     @property
     def name(self):
@@ -166,51 +281,62 @@ class Config(object):
     def type(self):
         return self._type
 
-    @property
-    def server(self):
-        return self._server
-
-    @property
-    def username(self):
-        return self._username
+    def _get_password(self, option_name, encryped_option_name):
+        pwd = self._options.get(option_name, None)
+        if pwd is None:
+            encrypted_password = self._options.get(encryped_option_name, None)
+            if encrypted_password is None:
+                return None
+            try:
+                pwd = Password.decrypt(unhexlify(encrypted_password))
+            except TypeError:
+                raise InvalidPasswordFormat("Password can't be decrypted, possibly corrupted")
+        return pwd
 
     @property
     def password(self):
-        return self._password
-
-    @property
-    def owner(self):
-        return self._owner
-
-    @property
-    def env(self):
-        return self._env
-
-    @property
-    def rhsm_username(self):
-        return self._rhsm_username
+        return self._get_password('password', 'encrypted_password')
 
     @property
     def rhsm_password(self):
-        return self._rhsm_password
+        return self._get_password('rhsm_password', 'rhsm_encrypted_password')
+
+    @property
+    def rhsm_proxy_password(self):
+        return self._get_password('rhsm_proxy_password', 'rhsm_encrypted_proxy_password')
+
+    @property
+    def sat_password(self):
+        return self._get_password('sat_password', 'sat_encrypted_password')
 
 
 class ConfigManager(object):
-    def __init__(self, config_dir=VIRTWHO_CONF_DIR):
+    def __init__(self, logger, config_dir=None, defaults=None):
+        if not defaults:
+            try:
+                defaults_from_config = parseFile(VIRTWHO_GENERAL_CONF_PATH).get(VIRTWHO_VIRT_DEFAULTS_SECTION_NAME)
+                self._defaults = defaults_from_config or {}
+            except MissingSectionHeaderError:
+                self._defaults = {}
+        else:
+            self._defaults = defaults
+        if config_dir is None:
+            config_dir = VIRTWHO_CONF_DIR
         parser = SafeConfigParser()
         self._configs = []
+        self.logger = logger
         try:
             config_dir_content = os.listdir(config_dir)
         except OSError:
-            logging.warn("Configuration directory '%s' doesn't exist or is not accessible", config_dir)
+            self.logger.warn("Configuration directory '%s' doesn't exist or is not accessible", config_dir)
             return
         for conf in config_dir_content:
             try:
                 filename = parser.read(os.path.join(config_dir, conf))
                 if len(filename) == 0:
-                    logging.error("Unable to read configuration file %s", conf)
+                    self.logger.error("Unable to read configuration file %s", conf)
             except MissingSectionHeaderError:
-                logging.error("Configuration file %s contains no section headers", conf)
+                self.logger.error("Configuration file %s contains no section headers", conf)
 
         self._readConfig(parser)
 
@@ -218,16 +344,17 @@ class ConfigManager(object):
         self._configs = []
         for section in parser.sections():
             try:
-                config = Config.fromParser(section, parser)
+                config = Config.fromParser(section, parser, self._defaults)
+                config.checkOptions(self.logger)
                 self._configs.append(config)
             except NoOptionError as e:
-                logging.error(str(e))
+                self.logger.error(str(e))
 
     def readFile(self, filename):
         parser = SafeConfigParser()
         fname = parser.read(filename)
         if len(fname) == 0:
-            logging.error("Unable to read configuration file %s", filename)
+            self.logger.error("Unable to read configuration file %s", filename)
         self._readConfig(parser)
 
     @property
@@ -236,3 +363,31 @@ class ConfigManager(object):
 
     def addConfig(self, config):
         self._configs.append(config)
+
+
+def getOptions(section, parser):
+    options = {}
+    for option in parser.options(section):
+        options[option] = parser.get(section, option)
+    return options
+
+
+def getSections(parser):
+    sections = {}
+    for section in parser.sections():
+        try:
+            sections[section] = getOptions(section, parser)
+        except NoOptionError:
+            sections[section] = {}
+    return sections
+
+
+def parseFile(filename, logger=None):
+    # Parse a file into a dict of section_name: options_dict
+    # options_dict is a dict of option_name: value
+    parser = SafeConfigParser()
+    fname = parser.read(filename)
+    if len(fname) == 0 and logger:
+        logger.error("Unable to read configuration file %s", filename)
+    sections = getSections(parser)
+    return sections

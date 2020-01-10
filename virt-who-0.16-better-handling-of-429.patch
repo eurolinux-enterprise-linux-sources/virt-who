@@ -1,0 +1,120 @@
+commit 14f1d757d645c8a85551f7f43ddb72635f5284bb
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Thu Jan 28 10:06:48 2016 +0100
+
+    Better handling of 429 error code
+
+diff --git a/manager/subscriptionmanager/subscriptionmanager.py b/manager/subscriptionmanager/subscriptionmanager.py
+index 336a9df..efa97bb 100644
+--- a/manager/subscriptionmanager/subscriptionmanager.py
++++ b/manager/subscriptionmanager/subscriptionmanager.py
+@@ -195,8 +195,8 @@ class SubscriptionManager(Manager):
+         except BadStatusLine:
+             raise ManagerError("Communication with subscription manager interrupted")
+         except rhsm_connection.RateLimitExceededException as e:
+-            self.retry_after = int(getattr(e, 'headers', {}).get('Retry-After'))
+-            raise ManagerThrottleError(self.retry_after)
++            retry_after = int(getattr(e, 'headers', {}).get('Retry-After'))
++            raise ManagerThrottleError(retry_after)
+         except rhsm_connection.GoneException:
+             raise ManagerError("Communication with subscription manager failed: consumer no longer exists")
+         except rhsm_connection.ConnectionException as e:
+diff --git a/tests/test_virtwho.py b/tests/test_virtwho.py
+index 4d00e64..623db16 100644
+--- a/tests/test_virtwho.py
++++ b/tests/test_virtwho.py
+@@ -401,7 +401,7 @@ class TestSend(TestBase):
+         initial = 10
+         retry_after = 2
+         expected_429_count = 1
+-        time.side_effect = [initial, initial]
++        time.return_value = initial
+ 
+         fromOptions.return_value = Mock()
+         options = Mock()
+@@ -416,7 +416,7 @@ class TestSend(TestBase):
+         config.hash = "config_hash"
+         config.name = "config_name"
+ 
+-        report = HostGuestAssociationReport(config, {})
++        report = HostGuestAssociationReport(config, {'hypervisors': []})
+         report.state = AbstractVirtReport.STATE_PROCESSING
+         virtwho.queued_reports[config.name] = report
+ 
+@@ -427,5 +427,22 @@ class TestSend(TestBase):
+         virtwho.send_current_report()
+ 
+         virtwho.send.assert_called_with(report)
+-        self.assertEquals(virtwho.send_after, initial + retry_after)
++        self.assertEquals(virtwho.send_after, initial + 60)
+         self.assertEquals(len(virtwho.queued_reports), 1)
++
++        retry_after = 120
++        virtwho.send.side_effect = ManagerThrottleError(retry_after)
++        virtwho.send_current_report()
++        virtwho.send.assert_called_with(report)
++        self.assertEquals(virtwho.send_after, initial + retry_after * 2)
++        self.assertEquals(len(virtwho.queued_reports), 1)
++
++        def finish(x):
++            report.state = AbstractVirtReport.STATE_FINISHED
++            return True
++        virtwho.send.side_effect = finish
++        virtwho.send_current_report()
++        retry_after = 60
++        self.assertEquals(virtwho.retry_after, retry_after)
++        self.assertEquals(virtwho.send_after, initial + retry_after)
++        self.assertEquals(len(virtwho.queued_reports), 0)
+diff --git a/virtwho.py b/virtwho.py
+index 84e8a21..db2d338 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -137,7 +137,6 @@ class VirtWho(object):
+         if not self.reports_in_progress:
+             return
+         updated = []
+-        finished = False
+         for report in self.reports_in_progress:
+             self.check_report_state(report)
+             if report.state == AbstractVirtReport.STATE_CREATED:
+@@ -146,19 +145,18 @@ class VirtWho(object):
+                 updated.append(report)
+             else:
+                 self.report_done(report)
+-                finished = True
+         self.reports_in_progress = updated
+ 
+-        # We've just finished sending last report, we can send next one after
+-        # backend interval
+-        if finished and not updated:
+-            self.send_after = time.time() + self.retry_after
+-
+     def send_current_report(self):
+         name, report = self.queued_reports.popitem(last=False)
+ 
+         try:
+             if self.send(report):
++                # Success will reset the 429 count
++                if self._429_count > 0:
++                    self._429_count = 1
++                    self.retry_after = max(MinimumSendInterval, self.options.interval)
++
+                 self.logger.debug('Report for config "%s" sent', name)
+                 if report.state == AbstractVirtReport.STATE_PROCESSING:
+                     self.reports_in_progress.append(report)
+@@ -170,12 +168,14 @@ class VirtWho(object):
+                 self.report_done(report)
+         except ManagerThrottleError as e:
+             self.queued_reports[name] = report
+-            self.retry_after = e.retry_after
++            self._429_count += 1
++            self.retry_after = max(MinimumSendInterval, self.options.interval, e.retry_after * self._429_count)
+             self.send_after = time.time() + self.retry_after
+             self.logger.debug('429 received, waiting %s seconds until sending again', e.retry_after)
+ 
+     def report_done(self, report):
+         name = report.config.name
++        self.send_after = time.time() + self.retry_after
+         if report.state == AbstractVirtReport.STATE_FINISHED:
+             self.last_reports_hash[name] = report.hash
+ 

@@ -20,14 +20,14 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import os
 import shutil
-import logging
 import tempfile
-import subprocess
 from mock import patch, MagicMock, ANY
 
 from base import TestBase
 from config import Config
 from manager import Manager, ManagerError
+
+from virt import Guest, Virt, Hypervisor
 
 import rhsm.config as rhsm_config
 import rhsm.certificate
@@ -36,27 +36,19 @@ import rhsm.connection
 import xmlrpclib
 
 
+xvirt = type("", (), {'CONFIG_TYPE': 'xxx'})()
+
+
 class TestManager(TestBase):
     """ Test of all available subscription managers. """
-
-    guestInfo = [
-        {
-            'guestId': '9c927368-e888-43b4-9cdb-91b10431b258',
-            'attributes': {
-                'hypervisorType': 'QEMU',
-                'virtWhoType': 'libvirt',
-                'active': 1
-            }
-        }
-    ]
+    guest1 = Guest('9c927368-e888-43b4-9cdb-91b10431b258', xvirt, Guest.STATE_RUNNING, hypervisorType='QEMU')
+    guest2 = Guest('d5ffceb5-f79d-41be-a4c1-204f836e144a', xvirt, Guest.STATE_SHUTOFF, hypervisorType='QEMU')
+    guestInfo = [guest1]
 
     mapping = {
-        '9c927368-e888-43b4-9cdb-91b10431b258': [
-            ''
-        ],
-        'ad58b739-5288-4cbc-a984-bd771612d670': [
-            '2147647e-6f06-4ac0-982d-6902c259f9d6',
-            'd5ffceb5-f79d-41be-a4c1-204f836e144a'
+        'hypervisors': [
+            Hypervisor('9c927368-e888-43b4-9cdb-91b10431b258', []),
+            Hypervisor('ad58b739-5288-4cbc-a984-bd771612d670', [guest1,guest2])
         ]
     }
 
@@ -66,7 +58,6 @@ class TestSubscriptionManager(TestManager):
 
     def prepare(self, create_from_file, connection):
         self.options = MagicMock()
-        self.options.smType = self.smType
 
         tempdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tempdir)
@@ -83,24 +74,32 @@ class TestSubscriptionManager(TestManager):
 
         create_from_file.return_value.cert_uuid = {'CN': 'Test'}
         connection.return_value = MagicMock()
+        connection.return_value.has_capability = MagicMock(return_value=False)
 
-    @patch("rhsm.certificate.create_from_file")
     @patch("rhsm.connection.UEPConnection")
+    @patch("rhsm.certificate.create_from_file")
     def test_sendVirtGuests(self, create_from_file, connection):
         self.prepare(create_from_file, connection)
-        manager = Manager.fromOptions(self.logger, self.options)
+        config = Config('test', 'libvirt')
+        manager = Manager.fromOptions(self.logger, self.options, config)
         manager.sendVirtGuests(self.guestInfo)
-        manager.connection.updateConsumer.assert_called_with(ANY, guest_uuids=self.guestInfo)
+        manager.connection.updateConsumer.assert_called_with(
+                ANY,
+                guest_uuids=[guest.toDict() for guest in self.guestInfo])
 
-    @patch("rhsm.certificate.create_from_file")
     @patch("rhsm.connection.UEPConnection")
+    @patch("rhsm.certificate.create_from_file")
     def test_hypervisorCheckIn(self, create_from_file, connection):
         self.prepare(create_from_file, connection)
-        manager = Manager.fromOptions(self.logger, self.options)
+        config = Config('test', 'libvirt')
+        manager = Manager.fromOptions(self.logger, self.options, config)
         self.options.env = "ENV"
         self.options.owner = "OWNER"
-        manager.hypervisorCheckIn(self.options, self.mapping)
-        manager.connection.hypervisorCheckIn.assert_called_with(self.options.owner, self.options.env, self.mapping)
+        manager.hypervisorCheckIn(self.options, self.mapping, options=self.options)
+        manager.connection.hypervisorCheckIn.assert_called_with(
+                self.options.owner,
+                self.options.env,
+                dict((host.hypervisorId, [guest.toDict() for guest in host.guestIds]) for host in self.mapping['hypervisors']), options=self.options)
 
 
 class TestSatellite(TestManager):
@@ -108,45 +107,40 @@ class TestSatellite(TestManager):
 
     def test_sendVirtGuests(self):
         options = MagicMock()
-        options.smType = self.smType
-
-        manager = Manager.fromOptions(self.logger, options)
+        config = Config('test', 'libvirt', sat_server='localhost')
+        manager = Manager.fromOptions(self.logger, options, config)
         self.assertRaises(ManagerError, manager.sendVirtGuests, self.guestInfo)
 
     @patch("xmlrpclib.Server")
     def test_hypervisorCheckIn(self, server):
         options = MagicMock()
-        options.smType = self.smType
+        server.return_value.registration.new_system_user_pass.return_value = {
+            'system_id': '123'
+        }
 
-        manager = Manager.fromOptions(self.logger, options)
+        config = Config('test', 'libvirt', sat_server='localhost')
+        manager = Manager.fromOptions(self.logger, options, config)
         options.env = "ENV"
         options.owner = "OWNER"
         manager.hypervisorCheckIn(options, self.mapping, 'ABC')
         manager.server.registration.virt_notify.assert_called_with(ANY, [
-            [
-                0, 'exists', 'system', {'uuid': '0000000000000000', 'identity': 'host'}
-            ], [
-                0, 'crawl_began', 'system', {}
-            ], [
-                0, 'exists', 'domain', {
-                    'state': 'running',
-                    'memory_size': 0,
-                    'name': 'VM from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670',
-                    'virt_type': 'fully_virtualized',
-                    'vcpus': 1,
-                    'uuid': '2147647e6f064ac0982d6902c259f9d6'
-                }
-            ], [
-                0, 'exists', 'domain', {
-                    'state': 'running',
-                    'memory_size': 0,
-                    'name': 'VM from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670',
-                    'virt_type': 'fully_virtualized',
-                    'vcpus': 1,
-                    'uuid': 'd5ffceb5f79d41bea4c1204f836e144a'
-                }
-            ], [
-                0, 'crawl_ended', 'system', {}
-            ]
+            [0, "exists", "system", {"identity": "host", "uuid": "0000000000000000"}],
+            [0, "crawl_began", "system", {}],
+            [0, "exists", "domain", {
+                "memory_size": 0,
+                "name": "VM 9c927368-e888-43b4-9cdb-91b10431b258 from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
+                "state": "running",
+                "uuid": "9c927368e88843b49cdb91b10431b258",
+                "vcpus": 1,
+                "virt_type": "fully_virtualized"
+            }],
+            [0, "exists", "domain", {
+                "memory_size": 0,
+                "name": "VM d5ffceb5-f79d-41be-a4c1-204f836e144a from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
+                "state": "shutoff",
+                "uuid": "d5ffceb5f79d41bea4c1204f836e144a",
+                "vcpus": 1,
+                "virt_type": "fully_virtualized"
+            }],
+            [0, "crawl_ended", "system", {}]
         ])
-

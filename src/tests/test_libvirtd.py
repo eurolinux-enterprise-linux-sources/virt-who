@@ -21,13 +21,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 from threading import Event
 from Queue import Queue
 from base import TestBase
-from mock import patch, Mock, ANY
-import logging
+from mock import patch, ANY, Mock
 
 from config import Config
-from virt import Virt, Domain, VirtError
-from virt.libvirtd.libvirtd import VirEventLoopThread
-import virt.libvirtd.libvirtd
+from virt import Virt, VirtError
 
 
 def raiseLibvirtError(*args, **kwargs):
@@ -35,18 +32,20 @@ def raiseLibvirtError(*args, **kwargs):
     raise libvirt.libvirtError('')
 
 
-LIBVIRT_CAPABILITIES_XML = '<capabilities><host><uuid>this-is-uuid</uuid></host></capabilities>'
+LIBVIRT_CAPABILITIES_XML = '<capabilities><host><name>this-my-name</name><uuid>this-is-uuid</uuid></host></capabilities>'
+LIBVIRT_CAPABILITIES_NO_HOSTNAME_XML = '<capabilities><host><uuid>this-is-uuid</uuid></host></capabilities>'
 
 class TestLibvirtd(TestBase):
     def setUp(self):
         pass
 
-    def run_virt(self, config):
+    def run_virt(self, config, in_queue=None):
         v = Virt.fromConfig(self.logger, config)
-        v._queue = Queue()
+        v._queue = in_queue or Queue()
         v._terminate_event = Event()
         v._interval = 3600
         v._oneshot = True
+        v._createEventLoop = Mock()
         v._run()
 
     @patch('libvirt.openReadOnly')
@@ -64,42 +63,65 @@ class TestLibvirtd(TestBase):
 
     @patch('libvirt.openReadOnly')
     def test_remote_hostname(self, virt):
-        config = Config('test', 'libvirt', 'server')
+        config = Config('test', 'libvirt', server='server')
         virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_XML
         self.run_virt(config)
         virt.assert_called_with('qemu+ssh://server/system?no_tty=1')
 
     @patch('libvirt.openReadOnly')
     def test_remote_url(self, virt):
-        config = Config('test', 'libvirt', 'abc://server/test')
+        config = Config('test', 'libvirt', server='abc://server/test')
         virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_XML
         self.run_virt(config)
         virt.assert_called_with('abc://server/test?no_tty=1')
 
     @patch('libvirt.openReadOnly')
     def test_remote_hostname_with_username(self, virt):
-        config = Config('test', 'libvirt', 'server', 'user')
+        config = Config('test', 'libvirt', server='server', username='user')
         virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_XML
         self.run_virt(config)
         virt.assert_called_with('qemu+ssh://user@server/system?no_tty=1')
 
     @patch('libvirt.openReadOnly')
     def test_remote_url_with_username(self, virt):
-        config = Config('test', 'libvirt', 'abc://server/test', 'user')
+        config = Config('test', 'libvirt', server='abc://server/test',
+                        username='user')
         virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_XML
         self.run_virt(config)
         virt.assert_called_with('abc://user@server/test?no_tty=1')
 
     @patch('libvirt.openAuth')
     def test_remote_hostname_with_username_and_password(self, virt):
-        config = Config('test', 'libvirt', 'server', 'user', 'pass')
+        config = Config('test', 'libvirt', server='server',
+                        username='user', password='pass')
         virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_XML
         self.run_virt(config)
         virt.assert_called_with('qemu+ssh://user@server/system?no_tty=1', ANY, ANY)
 
     @patch('libvirt.openAuth')
     def test_remote_url_with_username_and_password(self, virt):
-        config = Config('test', 'libvirt', 'abc://server/test', 'user', 'pass')
+        config = Config('test', 'libvirt', server='abc://server/test',
+                        username='user', password='pass')
         virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_XML
         self.run_virt(config)
         virt.assert_called_with('abc://user@server/test?no_tty=1', ANY, ANY)
+
+    @patch('libvirt.openReadOnly')
+    def test_mapping_has_hostname_when_availible(self, virt):
+        config = Config('test', 'libvirt', server='abc://server/test')
+        queue = Queue()
+        virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_XML
+        self.run_virt(config, queue)
+        result = queue.get(True)
+        for host in result.association['hypervisors']:
+            self.assertTrue(host.name is not None)
+
+    @patch('libvirt.openReadOnly')
+    def test_mapping_has_no_hostname_when_unavailible(self, virt):
+        config = Config('test', 'libvirt', server='abc://server/test')
+        queue = Queue()
+        virt.return_value.getCapabilities.return_value = LIBVIRT_CAPABILITIES_NO_HOSTNAME_XML
+        self.run_virt(config, queue)
+        result = queue.get(True)
+        for host in result.association['hypervisors']:
+            self.assertTrue(host.name is None)

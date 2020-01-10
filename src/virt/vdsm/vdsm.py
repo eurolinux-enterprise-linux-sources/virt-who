@@ -26,11 +26,26 @@ import xmlrpclib
 from ConfigParser import SafeConfigParser, NoSectionError, NoOptionError
 import subprocess
 
-from virt import Virt
+from virt import Virt, Guest
 
 
 class VdsmError(Exception):
     pass
+
+
+VDSM_STATE_TO_GUEST_STATE = {
+    'Down': Guest.STATE_SHUTOFF,
+    'Migration Destination': Guest.STATE_SHUTOFF,
+    'Migration Source': Guest.STATE_SHUTINGDOWN,
+    'Paused': Guest.STATE_PAUSED,
+    'Powering down': Guest.STATE_SHUTINGDOWN,
+    'RebootInProgress': Guest.STATE_SHUTOFF,
+    'Restoring state': Guest.STATE_SHUTOFF,
+    'Saving State': Guest.STATE_SHUTOFF,
+    'Up': Guest.STATE_RUNNING,
+    'WaitForLaunch': Guest.STATE_SHUTOFF,
+    'Powering up': Guest.STATE_SHUTOFF
+}
 
 
 class Vdsm(Virt):
@@ -61,7 +76,7 @@ class Vdsm(Virt):
         try:
             self.management_port = parser.get("addresses", "management_port")
         except (NoSectionError, NoOptionError):
-            self.management_port = 54321
+            self.management_port = '54321'
 
     def _getLocalVdsName(self, tsPath):
         p = subprocess.Popen([
@@ -107,15 +122,20 @@ class Vdsm(Virt):
         domains = []
         response = self.server.list(True)
         if response['status']['code'] != 0:
-            self.logger.error("Unable to list virtual machines: %s" % response['status']['message'])
+            self.logger.error("Unable to list virtual machines: %s", response['status']['message'])
         else:
             for vm in response['vmList']:
-                domains.append(vm['vmId'])
+                domains.append(
+                        Guest(vm['vmId'],
+                              self,
+                              VDSM_STATE_TO_GUEST_STATE.get(vm['status'], Guest.STATE_UNKNOWN),
+                              hypervisorType='qemu'))
         return domains
 
 
 if __name__ == '__main__':
     import logging
-    logger = logging.getLogger("rhsm-app." + __name__)
+    logger = logging.getLogger("virtwho.vdsm.main")
+    logger.addHandler(logging.StreamHandler())
     vdsm = Vdsm(logger, None)
     print vdsm.listDomains()

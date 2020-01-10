@@ -19,11 +19,15 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
 import sys
+import os
 import httplib
 import urlparse
 import base64
+from xml.etree import ElementTree
 
 import virt
+
+import ntlm
 
 try:
     from uuid import uuid1
@@ -34,63 +38,120 @@ except ImportError:
         # fallback to calling commandline uuidgen
         return subprocess.Popen(["uuidgen"], stdout=subprocess.PIPE).communicate()[0].strip()
 
-# Import XML parser
-try:
-    from elementtree import ElementTree
-except ImportError:
-    from xml.etree import ElementTree
 
-import ntlm
+class HyperVSoapGenerator(object):
+    def __init__(self, url):
+        self.url = url
+        self.virtualization_namespace = 'root/virtualization'
 
-NAMESPACES = {
-    's': 'http://www.w3.org/2003/05/soap-envelope',
-    'wsa': 'http://schemas.xmlsoap.org/ws/2004/08/addressing',
-    'wsman': 'http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd',
-    'wsen': 'http://schemas.xmlsoap.org/ws/2004/09/enumeration'
-}
+    @property
+    def namespaces(self):
+        return {
+            's': 'http://www.w3.org/2003/05/soap-envelope',
+            'wsa': 'http://schemas.xmlsoap.org/ws/2004/08/addressing',
+            'wsman': 'http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd',
+            'wsen': 'http://schemas.xmlsoap.org/ws/2004/09/enumeration',
+        }
 
-ENVELOPE = """<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope """ + " ".join(('xmlns:%s="%s"' % (k, v) for k, v in NAMESPACES.items())) + """>
-    %s
-    %s
-</s:Envelope>"""
+    vsms_namespace = 'http://schemas.microsoft.com/wbem/wsman/1/wmi/%(ns)s/Msvm_VirtualSystemManagementService'
+    si_namespace = 'http://schemas.microsoft.com/wbem/wsman/1/wmi/%(ns)s/Msvm_SummaryInformation'
 
+    def envelope(self, header, body):
+        return """<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope """ + " ".join(('xmlns:%s="%s"' % (k, v) for k, v in self.namespaces.items())) + """>
+    %(header)s
+    %(body)s
+</s:Envelope>""" % {'header': header, 'body': body}
 
-def getHeader(action):
-    return """<s:Header>
-        <wsa:Action s:mustUnderstand="true">""" + NAMESPACES['wsen'] + "/" + action + """</wsa:Action>
-        <wsa:To s:mustUnderstand="true">%(url)s</wsa:To>
-        <wsman:ResourceURI s:mustUnderstand="true">http://schemas.microsoft.com/wbem/wsman/1/wmi/%(namespace)s/*</wsman:ResourceURI>
-        <wsa:MessageID s:mustUnderstand="true">uuid:""" + str(uuid1()) + """</wsa:MessageID>
-        <wsa:ReplyTo>
-            <wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
-        </wsa:ReplyTo>
-    </s:Header>"""
+    def getHeader(self, action, action_namespace=None,
+                  additional_headers=None, resourceURI='*',
+                  resource_namespace='root/virtualization'):
+        if action_namespace is None:
+            action_namespace = self.namespaces['wsen']
 
+        if additional_headers is None:
+            additional_headers = ""
 
-ENUMERATE_BODY = """<s:Body>
+        return """<s:Header>
+            <wsa:Action s:mustUnderstand="true">%(action_namespace)s/%(action)s</wsa:Action>
+            <wsa:To s:mustUnderstand="true">%(url)s</wsa:To>
+            <wsman:ResourceURI s:mustUnderstand="true">
+                http://schemas.microsoft.com/wbem/wsman/1/wmi/%(resource_namespace)s/%(resourceURI)s
+            </wsman:ResourceURI>
+            <wsa:MessageID s:mustUnderstand="true">uuid:%(uuid)s</wsa:MessageID>
+            <wsa:ReplyTo>
+                <wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+            </wsa:ReplyTo>%(additional_headers)s
+        </s:Header>""" % {
+            'uuid': str(uuid1()),
+            'url': self.url,
+            'action': action,
+            'action_namespace': action_namespace,
+            'additional_headers': additional_headers,
+            'resourceURI': resourceURI,
+            'resource_namespace': resource_namespace
+        }
+
+    def enumerateXML(self, query, namespace):
+        body = """<s:Body>
         <wsen:Enumerate>
             <wsman:Filter Dialect="http://schemas.microsoft.com/wbem/wsman/1/WQL">%(query)s</wsman:Filter>
         </wsen:Enumerate>
-    </s:Body>"""
+    </s:Body>""" % {'query': query}
 
+        return self.envelope(
+            self.getHeader('Enumerate', resource_namespace=namespace),
+            body)
 
-PULL_BODY = """<s:Body>
+    def pullXML(self, enumerationContext, namespace):
+        body = """<s:Body>
         <wsen:Pull>
             <wsen:EnumerationContext>%(EnumerationContext)s</wsen:EnumerationContext>
         </wsen:Pull>
-    </s:Body>"""
+    </s:Body>""" % {'EnumerationContext': enumerationContext}
+        return self.envelope(
+            self.getHeader("Pull", resource_namespace=namespace),
+            body)
+
+    def getSummaryInformationXML(self, namespace):
+        body = """<s:Body>
+        <wsman:GetSummaryInformation_INPUT xmlns:p="%(namespace)s">
+            <p:RequestedInformation>0</p:RequestedInformation>
+            <p:RequestedInformation>1</p:RequestedInformation>
+            <p:RequestedInformation>100</p:RequestedInformation>
+        </wsman:GetSummaryInformation_INPUT>
+    </s:Body>""" % {'namespace': (self.vsms_namespace % {'ns': namespace})}
+
+        return self.envelope(
+            self.getHeader("GetSummaryInformation",
+                           action_namespace=self.vsms_namespace % {'ns': namespace},
+                           resourceURI="Msvm_VirtualSystemManagementService",
+                           resource_namespace=namespace,
+                           additional_headers="""
+        <wsman:SelectorSet>
+            <wsman:Selector Name="CreationClassName">Msvm_VirtualSystemManagementService</wsman:Selector>
+            <wsman:Selector Name="SystemCreationClassName">Msvm_ComputerSystem</wsman:Selector>
+        </wsman:SelectorSet>"""),
+            body)
 
 
-ENUMERATE_XML = ENVELOPE % (getHeader("Enumerate"), ENUMERATE_BODY)
-PULL_XML = ENVELOPE % (getHeader("Pull"), PULL_BODY)
+ENABLED_STATE_TO_GUEST_STATE = {
+    '2': virt.Guest.STATE_RUNNING,
+    '3': virt.Guest.STATE_SHUTOFF,
+    '4': virt.Guest.STATE_SHUTINGDOWN,
+    '9': virt.Guest.STATE_PAUSED,
+    '32768': virt.Guest.STATE_PAUSED,
+    '32769': virt.Guest.STATE_PMSUSPENDED
+}
 
 
 class HyperVSoap(object):
-    def __init__(self, url, connection, headers):
+    def __init__(self, url, connection, headers, logger):
         self.url = url
         self.connection = connection
         self.headers = headers
+        self.generator = HyperVSoapGenerator(self.url)
+        self.logger = logger
 
     def post(self, body):
         self.headers["Content-Length"] = "%d" % len(body)
@@ -100,6 +161,13 @@ class HyperVSoap(object):
         if response.status == 401:
             raise HyperVAuthFailed("Authentication failed")
         if response.status != 200:
+            data = response.read()
+            xml = ElementTree.fromstring(data)
+            errorcode = xml.find('.//{http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/MSFT_WmiError}error_Code')
+            # Suppress reporting of invalid namespace, because we're testing
+            # both old and new namespaces that HyperV uses
+            if errorcode is None or errorcode.text != '2150858778':
+                self.logger.debug("Invalid response (%d) from Hyper-V: %s", response.status, data)
             raise HyperVException("Communication with Hyper-V failed, HTTP error: %d" % response.status)
         if response is None:
             raise HyperVException("No reply from Hyper-V")
@@ -119,31 +187,31 @@ class HyperVSoap(object):
         return properties
 
     def Enumerate(self, query, namespace="root/virtualization"):
-        data = ENUMERATE_XML % {'url': self.url, 'query': query, 'namespace': namespace}
+        data = self.generator.enumerateXML(query=query, namespace=namespace)
         response = self.post(data)
         d = response.read()
         xml = ElementTree.fromstring(d)
-        if xml.tag != "{%(s)s}Envelope" % NAMESPACES:
+        if xml.tag != "{%(s)s}Envelope" % self.generator.namespaces:
             raise HyperVException("Wrong reply format")
-        responses = xml.findall("{%(s)s}Body/{%(wsen)s}EnumerateResponse" % NAMESPACES)
+        responses = xml.findall("{%(s)s}Body/{%(wsen)s}EnumerateResponse" % self.generator.namespaces)
         if len(responses) < 1:
             raise HyperVException("Wrong reply format")
         contexts = responses[0].getchildren()
         if len(contexts) < 1:
             raise HyperVException("Wrong reply format")
 
-        if contexts[0].tag != "{%(wsen)s}EnumerationContext" % NAMESPACES:
+        if contexts[0].tag != "{%(wsen)s}EnumerationContext" % self.generator.namespaces:
             raise HyperVException("Wrong reply format")
         return contexts[0].text
 
     def _PullOne(self, uuid, namespace):
-        data = PULL_XML % {'url': self.url, 'EnumerationContext': uuid, 'namespace': namespace}
+        data = self.generator.pullXML(enumerationContext=uuid, namespace=namespace)
         response = self.post(data)
         d = response.read()
         xml = ElementTree.fromstring(d)
-        if xml.tag != "{%(s)s}Envelope" % NAMESPACES:
+        if xml.tag != "{%(s)s}Envelope" % self.generator.namespaces:
             raise HyperVException("Wrong reply format")
-        responses = xml.findall("{%(s)s}Body/{%(wsen)s}PullResponse" % NAMESPACES)
+        responses = xml.findall("{%(s)s}Body/{%(wsen)s}PullResponse" % self.generator.namespaces)
         if len(responses) < 0:
             raise HyperVException("Wrong reply format")
 
@@ -151,9 +219,9 @@ class HyperVSoap(object):
         instance = None
 
         for node in responses[0].getchildren():
-            if node.tag == "{%(wsen)s}EnumerationContext" % NAMESPACES:
+            if node.tag == "{%(wsen)s}EnumerationContext" % self.generator.namespaces:
                 uuid = node.text
-            elif node.tag == "{%(wsen)s}Items" % NAMESPACES:
+            elif node.tag == "{%(wsen)s}Items" % self.generator.namespaces:
                 instance = HyperVSoap._Instance(node)
 
         return uuid, instance
@@ -165,6 +233,32 @@ class HyperVSoap(object):
             if instance is not None:
                 instances.append(instance)
         return instances
+
+    def Invoke_GetSummaryInformation(self, namespace):
+        '''
+        Get states of all virtual machines present on the system and
+        return dict where `ElementName` is key and `virt.GUEST.STATE_*` is value.
+        '''
+        data = self.generator.getSummaryInformationXML(namespace)
+        response = self.post(data)
+        d = response.read()
+        xml = ElementTree.fromstring(d)
+        if xml.tag != "{%(s)s}Envelope" % self.generator.namespaces:
+            raise HyperVException("Wrong reply format")
+        responses = xml.findall("{%(s)s}Body/{%(vsms)s}GetSummaryInformation_OUTPUT" % {
+            's': self.generator.namespaces['s'],
+            'vsms': self.generator.vsms_namespace % {'ns': namespace}
+        })
+        if len(responses) < 0:
+            raise HyperVException("Wrong reply format")
+        info = {}
+        si_namespace = self.generator.si_namespace % {'ns': namespace}
+        for node in responses[0].getchildren():
+            if 'SummaryInformation' in node.tag:
+                elementName = node.find("{%(si)s}ElementName" % {'si': si_namespace}).text
+                enabledState = node.find("{%(si)s}EnabledState" % {'si': si_namespace}).text
+                info[elementName] = ENABLED_STATE_TO_GUEST_STATE.get(enabledState, virt.Guest.STATE_UNKNOWN)
+        return info
 
 
 class HyperVException(virt.VirtError):
@@ -205,7 +299,7 @@ class HyperV(virt.Virt):
             path = parsed[2]
         self.url = urlparse.urlunsplit((parsed[0], self.host, path, "", ""))
 
-        logger.debug("Hyper-V url: %s" % self.url)
+        logger.debug("Hyper-V url: %s", self.url)
 
         # Check if we have domain defined and set flags accordingly
         user_parts = self.username.split('\\', 1)
@@ -219,18 +313,41 @@ class HyperV(virt.Virt):
             self.type1_flags = ntlm.NTLM_TYPE1_FLAGS
 
     def connect(self):
-        if self.url.startswith("https"):
-            connection = httplib.HTTPSConnection(self.host)
+        host, port = self.host.split(':')
+        proxy = False
+        protocol = self.url.partition("://")[0]
+        for env in ['%s_proxy' % protocol.lower(), '%s_PROXY' % protocol.upper()]:
+            if env in os.environ:
+                proxy_url = os.environ[env]
+                if "://" not in proxy_url:
+                    # Add http or https to proxy_url otherwise urlsplit
+                    # won't parse it correctly
+                    proxy_url = "%s://%s" % (protocol, proxy_url)
+                r = urlparse.urlsplit(proxy_url)
+                host = r.hostname
+                port = r.port or (80 if protocol == 'http' else 443)
+                proxy = True
+                break
+
+        if protocol == "https":
+            connection = httplib.HTTPSConnection(host, int(port))
         else:
-            connection = httplib.HTTPConnection(self.host)
+            connection = httplib.HTTPConnection(host, int(port))
+
+        if proxy and proxy_url.startswith('https'):
+            connection.request("CONNECT", self.host)
+            response = connection.getresponse()
 
         headers = {}
         headers["Connection"] = "Keep-Alive"
+        headers["Proxy-Connection"] = "Keep-Alive"
         headers["Content-Length"] = "0"
+        headers["Host"] = self.host
 
         connection.request("POST", self.url, headers=headers)
         response = connection.getresponse()
         response.read()
+
         if response.status == 200:
             return connection, headers
         elif response.status == 404:
@@ -271,11 +388,12 @@ class HyperV(virt.Virt):
 
         nego, challenge = auth_header.split(" ")
         if nego != "Negotiate":
-            print >>sys.stderr, "Wrong header: ", auth_header
-            sys.exit(1)
+            self.logger.warning("Wrong header: %s", auth_header)
+            raise HyperVAuthFailed("Wrong header: %s", auth_header)
 
         nonce, flags = ntlm.parse_NTLM_CHALLENGE_MESSAGE(challenge)
-        headers["Authorization"] = "Negotiate %s" % ntlm.create_NTLM_AUTHENTICATE_MESSAGE(nonce, self.username, self.domainname, self.password, flags)
+        headers["Authorization"] = "Negotiate %s" % ntlm.create_NTLM_AUTHENTICATE_MESSAGE(
+                    nonce, self.username, self.domainname, self.password, flags)
 
         connection.request("POST", self.url, headers=headers)
         response = connection.getresponse()
@@ -305,47 +423,115 @@ class HyperV(virt.Virt):
             s = uuid
         return s[6:8] + s[4:6] + s[2:4] + s[0:2] + "-" + s[11:13] + s[9:11] + "-" + s[16:18] + s[14:16] + s[18:]
 
+    def getVmmsVersion(self, hypervsoap):
+        """
+        This method retrieves the version of the vmms executable as it is the authoritative
+        version of hyper-v running on the machine.
+
+        https://social.technet.microsoft.com/Forums/windowsserver/en-US/dce2a4ec-10de-4eba-a19d-ae5213a2382d/how-to-tell-version-of-hyperv-installed?forum=winserverhyperv
+        """
+        vmmsVersion = ""
+        data = hypervsoap.Enumerate("select * from CIM_Datafile where FileName='vmms'", "root/cimv2")
+        for instance in hypervsoap.Pull(data, "root/cimv2"):
+            if (instance['Path'] == '\\windows\\system32\\'):
+                vmmsVersion = instance['Version']
+        return vmmsVersion
+
     def getHostGuestMapping(self):
         guests = []
         connection, headers = self.connect()
-        hypervsoap = HyperVSoap(self.url, connection, headers)
+        hypervsoap = HyperVSoap(self.url, connection, headers, self.logger)
         try:
             if not self.useNewApi:
                 # SettingType == 3 means current setting, 5 is snapshot - we don't want snapshots
-                uuid = hypervsoap.Enumerate("select BIOSGUID from Msvm_VirtualSystemSettingData where SettingType = 3", "root/virtualization")
+                uuid = hypervsoap.Enumerate(
+                    "select BIOSGUID, ElementName "
+                    "from Msvm_VirtualSystemSettingData "
+                    "where SettingType = 3",
+                    "root/virtualization")
             else:
                 # Filter out Planned VMs and snapshots, see
                 # http://msdn.microsoft.com/en-us/library/hh850257%28v=vs.85%29.aspx
                 uuid = hypervsoap.Enumerate(
-                    "select BIOSGUID from Msvm_VirtualSystemSettingData "
+                    "select BIOSGUID, ElementName "
+                    "from Msvm_VirtualSystemSettingData "
                     "where VirtualSystemType = 'Microsoft:Hyper-V:System:Realized'",
                     "root/virtualization/v2")
         except HyperVException:
             if not self.useNewApi:
-                self.logger.debug("Error when enumerating using root/virtualization namespace, trying root/virtualization/v2 namespace")
+                self.logger.debug("Error when enumerating using root/virtualization namespace, "
+                                  "trying root/virtualization/v2 namespace")
                 self.useNewApi = True
                 return self.getHostGuestMapping()
             raise
 
+        # Get guest states
+        guest_states = hypervsoap.Invoke_GetSummaryInformation(
+                "root/virtualization/v2" if self.useNewApi else "root/virtualization")
+        vmmsVersion = self.getVmmsVersion(hypervsoap)
         for instance in hypervsoap.Pull(uuid):
-            guests.append(HyperV.decodeWinUUID(instance["BIOSGUID"]))
-        uuid = hypervsoap.Enumerate("select UUID from Win32_ComputerSystemProduct", "root/cimv2")
-        host = None
-        for instance in hypervsoap.Pull(uuid, "root/cimv2"):
-            host = HyperV.decodeWinUUID(instance["UUID"])
-        return {host: guests}
+            try:
+                uuid = instance["BIOSGUID"]
+            except KeyError:
+                self.logger.warning("Guest without BIOSGUID found, ignoring")
+                continue
+
+            try:
+                elementName = instance["ElementName"]
+            except KeyError:
+                self.logger.warning("Guest %s is missing ElementName", uuid)
+                continue
+
+            try:
+                state = guest_states[elementName]
+            except KeyError:
+                self.logger.warning("Unknown state for guest %s", elementName)
+                state = virt.Guest.STATE_UNKNOWN
+
+            guests.append(
+                virt.Guest(
+                    HyperV.decodeWinUUID(uuid),
+                    self,
+                    state,
+                    hypervisorType='hyperv',
+                    hypervisorVersion=vmmsVersion))
+        # Get the hostname
+        hostname = None
+        socket_count = None
+        data = hypervsoap.Enumerate("select DNSHostName, NumberOfProcessors from Win32_ComputerSystem", "root/cimv2")
+        for instance in hypervsoap.Pull(data, "root/cimv2"):
+            hostname = instance["DNSHostName"]
+            socket_count = instance["NumberOfProcessors"]
+
+        if self.config.hypervisor_id == 'uuid':
+            uuid = hypervsoap.Enumerate("select UUID from Win32_ComputerSystemProduct", "root/cimv2")
+            host = None
+            for instance in hypervsoap.Pull(uuid, "root/cimv2"):
+                host = HyperV.decodeWinUUID(instance["UUID"])
+        elif self.config.hypervisor_id == 'hostname':
+            host = hostname
+        else:
+            raise virt.VirtError('Reporting of hypervisor %s is not implemented in %s backend' %
+                                 (self.config.hypervisor_id, self.CONFIG_TYPE))
+        facts = {
+            'cpu.cpu_socket(s)': str(socket_count),
+        }
+        hypervisor = virt.Hypervisor(hypervisorId=host, name=hostname, guestIds=guests, facts=facts)
+        return {'hypervisors': [hypervisor]}
 
     def ping(self):
         return True
 
 if __name__ == '__main__':
-    # TODO: read from config
     if len(sys.argv) < 4:
         print "Usage: %s url username password"
         sys.exit(0)
 
     import logging
-    logger = logging.Logger("")
+    logger = logging.Logger("virtwho.hyperv.main")
     logger.addHandler(logging.StreamHandler())
-    hyperv = HyperV(logger, sys.argv[1], sys.argv[2], sys.argv[3])
-    print hyperv.getHostGuestMapping()
+    from config import Config
+    config = Config('test', 'hyperv', server=sys.argv[1], username=sys.argv[2],
+                    password=sys.argv[3])
+    hyperv = HyperV(logger, config)
+    print dict((host, [guest.toDict() for guest in guests]) for host, guests in hyperv.getHostGuestMapping().items())

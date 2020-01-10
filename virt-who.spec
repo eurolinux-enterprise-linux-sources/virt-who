@@ -1,6 +1,6 @@
 Name:           virt-who
-Version:        0.12
-Release:        10.3%{?dist}
+Version:        0.16
+Release:        8%{?dist}
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
 
 Group:          System Environment/Base
@@ -12,81 +12,61 @@ BuildRoot:      %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 BuildArch:      noarch
 BuildRequires:  python2-devel
 Requires:       libvirt-python
-# python-rhsm 1.10.10 has required call for guestId support
+# python-rhsm 1.10.10 has support for sending additional information together with guest uuids
 Requires:       python-rhsm >= 1.10.10
 # python-suds is required for vSphere support
 Requires:       python-suds
 # m2crypto is required for Hyper-V support
 Requires:       m2crypto
+Requires:       python-requests
 Requires(post): chkconfig
 Requires(preun): chkconfig
 # This is for /sbin/service
 Requires(preun): initscripts
 
-# Fix timeout error in ESX
-Patch0: virt-who-0.12-esx-fix-timeout-error.patch
-# Fix proxy support in ESX
-Patch1: virt-who-0.12-esx-fix-proxy-in-esx.patch
-# Update options for Satellite naming
-Patch2: virt-who-0.12-update-options-for-satellite-naming.patch
-# Allow to identify hypervisors by other properties than UUID
-Patch3: virt-who-0.12-identify-hypervisor-by-hostname.patch
-# ESX: Relogin after connection failure
-Patch4: virt-who-0.12-esx-relogin-after-connection-failure.patch
-# Don't fail when encryption key doesn't exist
-Patch5: virt-who-0.12-dont-fail-without-encryption-key.patch
-# Fix reloading and termination of processes
-Patch6: virt-who-0.12-fix-reloading-and-termination-of-processes.patch
-# ESX: support esx update sets that are splitted to several parts
-Patch7: virt-who-0.12-esx-support-truncated-update-sets.patch
-# Properly handle reload requests
-Patch8: virt-who-0.12-properly-handle-reload-requests.patch
-# Don't check pidfile when running --help
-Patch9: virt-who-0.12-dont-check-pidfile-when-running-help.patch
-# Fail before forking when password key does not exist
-Patch10: virt-who-0.12-fail-before-forking-without-password-key.patch
-# Stop backends when system is not registered
-Patch11: virt-who-0.12-stop-backends-when-system-is-not-registered.patch
-# Show info message that report was successful
-Patch12: virt-who-0.12-show-info-that-report-was-successful.patch
-# Handle adding new esx host
-Patch13: virt-who-0.12-handle-adding-new-esx-host.patch
-# Filter out all host when filter_host_uuids is empty
-Patch14: virt-who-0.12-filter-out-all-host-when-filter_host_uuids-is-empty.patch
-# Fix oneshot mode for multiple hypervisors
-Patch15: virt-who-0.12-fix-oneshot-mode-for-multiple-hypervisors.patch
-# Fake: load the data from file as utf-8
-Patch16: virt-who-0.12-fake-load-data-as-utf8.patch
-# Add a note that changing hypervisor_id will result in duplicated entries
-Patch17: virt-who-0.12-note-hypervisor_id-duplicate.patch
-# Terminate background processes when main process exits
-Patch18: virt-who-0.12-terminate-background-processes-when-main-process-exits.patch
-# Log the result in print mode
-Patch19: virt-who-0.12-log-the-result-in-print-mode.patch
-# Fix virt backend termination
-Patch20: virt-who-0.12-fix-virt-backend-termination.patch
-# esx: report host/guest assoc even if empty
-Patch21: virt-who-0.12-esx-report-host-guest-even-when-empty.patch
-# Limit queue size to number of virt backends
-Patch22: virt-who-0.12-limit-queue-size-to-number-of-virt-backends.patch
-# rhevm: don't fail when hwuuid is not present
-Patch23: virt-who-0.12-rhevm-dont-fail-when-hwuuid-not-present.patch
-# Show error when encrypted password is corrupted
-Patch24: virt-who-0.12-show-error-when-encrypted-password-corrupted.patch
-# Clear the queue before putting exit/reload there
-Patch25: virt-who-0.12-clear-queue-before-reload-or-exit.patch
-# rhevm: don't throw an exception when host doesn't have hardware uuid
-Patch26: virt-who-0.12-rhevm-dont-throw-exception-when-host-without-hw-uuid.patch
-# log: don't rotate log file, it already has logrotate
-Patch27: virt-who-0.12-dont-rotate-log-file.patch
-# libvirtd: properly terminate libvirt connection on exit
-Patch28: virt-who-0.12-libvirtd-terminate-connection-on-exit.patch
-# esx: handle vcenter restart
-Patch29: virt-who-0.12-esx-handle-vcenter-restart.patch
-# subscriptionmanager: suppress BadStatusLine exception
-Patch30: virt-who-0.12-subscriptionmanager-suppress-badstatusline-exception.patch
-# Handle error 429
-Patch31: virt-who-0.12-handle-error-429.patch
+
+# Fix typo in template.conf
+Patch0:         virt-who-0.16-fix-typo-in-template-conf.patch
+# HyperV: support ntlm sealing and signing
+Patch1:         virt-who-0.16-hyperv-support-ntlm-sealing.patch
+# Use whole report as argument to hypervisorCheckIn and sendVirtGuests
+Patch2:         virt-who-0.16-use-whole-report-for-hypervisorCheckIn.patch
+# Refactor main loop and job scheduling
+Patch3:         virt-who-0.16-refactor-main-loop-and-jobs.patch
+# Improve logging
+Patch4:         virt-who-0.16-improve-logging.patch
+# Better handling of 429 error code
+Patch5:         virt-who-0.16-better-handling-of-429.patch
+# Background and oneshot modes are no longer exclusive
+Patch6:         virt-who-0.16-background-and-oneshot-not-exclusive.patch
+# Handle unregister gracefully
+Patch7:         virt-who-0.14-handle-unregister-gracefully.patch
+# Documentation and manual page fixes
+Patch8:         virt-who-0.14-docu-and-manpage-fixes.patch
+# Don't terminate virt-who if the system is not registered
+Patch9:         virt-who-0.16-dont-terminate-when-unregistered.patch
+# Reword note about hwuuid in man page
+Patch10:        virt-who-0.16-reword-hwuuid-note-in-manpage.patch
+# Change pidfile permissions to 600
+Patch11:        virt-who-0.16-pidfile-permission-600.patch
+# Do not change minimal reporting interval by interval option
+Patch12:        virt-who-0.16-no-minimal-interval-change.patch
+# Fix default interval in the man page
+Patch13:        virt-who-0.16-fix-default-interval-man-page.patch
+# No rate limit for first round of updates
+Patch14:        virt-who-0.16-no-rate-limit-for-first-updates.patch
+# Honor interval even with event monitoring
+Patch15:        virt-who-0.16-honor-interval-with-event-monitoring.patch
+# Fix satellite5 env var usage
+Patch16:        virt-who-0.16-satellite5-fix-env-var-usage.patch
+# Don't print anything when nothing found in the print mode
+Patch17:        virt-who-0.16-dont-print-when-nothing-found.patch
+# Handle no hostname returned from esx
+Patch18:        virt-who-0.16-handle-no-hostname-returned-from-esx.patch
+# ESX: fix logging out from hypervisor on exit
+Patch19:        virt-who-0.16-esx-fix-logging-out-from-hypervisor.patch
+# VDSM: do not enforce sslv3
+Patch20:        virt-who-0.16-dont-enforce-sslv3.patch
 
 
 %description
@@ -116,17 +96,6 @@ report them to the subscription manager.
 %patch18 -p1
 %patch19 -p1
 %patch20 -p1
-%patch21 -p1
-%patch22 -p1
-%patch23 -p1
-%patch24 -p1
-%patch25 -p1
-%patch26 -p1
-%patch27 -p1
-%patch28 -p1
-%patch29 -p1
-%patch30 -p1
-%patch31 -p1
 
 
 %build
@@ -163,32 +132,66 @@ fi
 
 
 %files
-%doc README README.hyperv LICENSE
+%doc README.md README.hyperv LICENSE
 %{_bindir}/virt-who
 %{_bindir}/virt-who-password
 %{_datadir}/virt-who/
 %{_sysconfdir}/rc.d/init.d/virt-who
-%attr(600, root, root) %dir %{_sysconfdir}/virt-who.d
+%{_sysconfdir}/virt-who.conf
+%attr(700, root, root) %dir %{_sysconfdir}/virt-who.d
+%{_sysconfdir}/virt-who.d/template.conf
 %attr(600, root, root) %config(noreplace) %{_sysconfdir}/sysconfig/virt-who
 %{_mandir}/man8/virt-who.8.gz
 %{_mandir}/man8/virt-who-password.8.gz
 %{_mandir}/man5/virt-who-config.5.gz
-%attr(600, root, root) %{_sharedstatedir}/%{name}
+%attr(700, root, root) %{_sharedstatedir}/%{name}
 %ghost %{_sharedstatedir}/%{name}/key
 
 
 %changelog
-* Thu Feb 25 2016 Radek Novacek <rnovacek@redhat.com> 0.12-10.3
-- Fix deadlock when handling 429 code
-- Resolves: rhbz#1306956
+* Thu Mar 31 2016 Radek Novacek <rnovacek@redhat.com> 0.16-8
+- ESX: fix logging out from hypervisor on exit
+- VDSM: do not enforce sslv3
+- Resolves: rhbz#1249928
 
-* Tue Feb 16 2016 Radek Novacek <rnovacek@redhat.com> 0.12-10.2
-- Rebuild
-- Resolves: rhbz#1306956
+* Thu Mar 10 2016 Radek Novacek <rnovacek@redhat.com> 0.16-7
+- Fix satellite5 env var usage
+- Don't print anything when nothing found in the print mode
+- Handle no hostname returned from esx
+- Resolves: rhbz#1284037
 
-* Tue Feb 16 2016 Radek Novacek <rnovacek@redhat.com> 0.12-10.1
-- Handle error 429
-- Resolves: rhbz#1306956
+* Thu Feb 25 2016 Radek Novacek <rnovacek@redhat.com> 0.16-6
+- No rate limit for first round of updates
+- Honor interval even with event monitoring
+- Resolves: rhbz#1230041, rhbz#1295644
+
+* Tue Feb 23 2016 Radek Novacek <rnovacek@redhat.com> 0.16-5
+- Change pidfile permissions to 600
+- Do not change minimal reporting interval by interval option
+- Fix default interval in the man page
+- Resolves: rhbz#1310977
+
+* Thu Feb 11 2016 Radek Novacek <rnovacek@redhat.com> 0.16-4
+- Don't terminate virt-who if the system is not registered
+- Reword note about hwuuid in man page
+- Resolves: rhbz#1293821, rhbz#1233074
+
+* Tue Feb 02 2016 Radek Novacek <rnovacek@redhat.com> 0.16-3
+- Requires: python-requests
+- Resolves: rhbz#1294746
+
+* Tue Jan 26 2016 Radek Novacek <rnovacek@redhat.com> 0.16-2
+- Support NTLM sealing
+- Fix interval issues
+- Improve exception handling
+- Make background and oneshot modes not exclusive
+- Handle unregister gracefully
+- Documentation and manual page fixes
+- Resolves: rhbz#1294746
+
+* Thu Dec 17 2015 Radek Novacek <rnovacek@redhat.com> 0.16-1
+- Rebase to virt-who-0.16
+- Resolves: rhbz#1258765
 
 * Thu Jun 04 2015 Radek Novacek <rnovacek@redhat.com> 0.12-10
 - Esx: handle vcenter restart

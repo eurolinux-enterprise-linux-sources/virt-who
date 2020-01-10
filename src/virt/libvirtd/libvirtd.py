@@ -25,11 +25,24 @@ import urlparse
 
 import virt
 
-# Import XML parser
-try:
-    from elementtree import ElementTree
-except ImportError:
-    from xml.etree import ElementTree
+from xml.etree import ElementTree
+
+
+class LibvirtdGuest(virt.Guest):
+    def __init__(self, libvirtd, domain):
+        try:
+            state = domain.state(0)[0]
+        except AttributeError:
+            # Some versions of libvirt doesn't have domain.state() method,
+            # use first value from info instead
+            state = domain.info()[0]
+
+        super(LibvirtdGuest, self).__init__(
+            uuid=domain.UUIDString(),
+            virt=libvirtd,
+            state=state,
+            hypervisorType=libvirtd.getHypervisorType(),
+            hypervisorVersion=libvirtd.getVersion())
 
 
 class VirEventLoopThread(threading.Thread):
@@ -65,9 +78,32 @@ class Libvirtd(virt.Virt):
         super(Libvirtd, self).__init__(logger, config)
         self.changedCallback = None
         self.registerEvents = registerEvents
+        self._host_capabilities_xml = None
+        self._host_socket_count = None
         self._host_uuid = None
+        self._host_name = None
         self.eventLoopThread = None
         libvirt.registerErrorHandler(lambda ctx, error: None, None)
+
+    def getVersion(self):
+        """
+        The constants used to extract the version numbers were found in
+        /lib64/python2.7/site-packages/libvirt.py
+        """
+        version_num = self.virt.getVersion()
+        major = version_num / 1000000
+        version_num -= major * 1000000
+
+        minor = version_num / 1000
+        version_num -= minor * 1000
+
+        release = version_num
+        return "%(major)s.%(minor)s.%(release)s" % {'major': major,
+                'minor': minor,
+                'release': release}
+
+    def getHypervisorType(self):
+        return self.virt.getType()
 
     def isHypervisor(self):
         return bool(self.config.server)
@@ -145,8 +181,9 @@ class Libvirtd(virt.Virt):
         self._createEventLoop()
 
         self.virt = None
+        initial = True
 
-        while not self._terminate_event.is_set():
+        while not self.is_terminated():
             if self.virt is None:
                 self.virt = self._connect()
 
@@ -154,22 +191,23 @@ class Libvirtd(virt.Virt):
                 self._disconnect()
                 self.virt = self._connect()
 
-            report = self._get_report()
-            self._queue.put(report)
-            self.time_since_update = 0
+            if initial:
+                report = self._get_report()
+                self.enqueue(report)
+                initial = False
 
             if self._oneshot:
-                return
+                break
 
-            while self.time_since_update < self._interval and self.virt.isAlive() == 1:
-                self.time_since_update += 1
-                time.sleep(1)
-
+            time.sleep(1)
+        if self.eventLoopThread is not None and self.eventLoopThread.isAlive():
+            self.eventLoopThread.terminate()
+            self.eventLoopThread.join(1)
+        self._disconnect()
 
     def _callback(self, *args, **kwargs):
         report = self._get_report()
-        self._queue.put(report)
-        self.time_since_update = 0
+        self.enqueue(report)
 
     def _get_report(self):
         if self.isHypervisor():
@@ -186,53 +224,62 @@ class Libvirtd(virt.Virt):
                 if domain.UUIDString() == "00000000-0000-0000-0000-000000000000":
                     # Don't send Domain-0 on xen (zeroed uuid)
                     continue
-                domains.append(virt.Domain(self.virt, domain))
-                self.logger.debug("Virtual machine found: %s: %s" % (domain.name(), domain.UUIDString()))
+                domains.append(LibvirtdGuest(self, domain))
+                self.logger.debug("Virtual machine found: %s: %s", domain.name(), domain.UUIDString())
 
             # Non active domains
             for domainName in self.virt.listDefinedDomains():
                 domain = self.virt.lookupByName(domainName)
-                domains.append(virt.Domain(self.virt, domain))
-                self.logger.debug("Virtual machine found: %s: %s" % (domainName, domain.UUIDString()))
+                domains.append(LibvirtdGuest(self, domain))
+                self.logger.debug("Virtual machine found: %s: %s", domainName, domain.UUIDString())
         except libvirt.libvirtError as e:
             self.virt.close()
             raise virt.VirtError(str(e))
-        self.logger.debug("Libvirt domains found: %s" % domains)
+        self.logger.debug("Libvirt domains found: %s", ", ".join(guest.uuid for guest in domains))
         return domains
 
-    def _remote_host_uuid(self):
+    @property
+    def host_capabilities_xml(self):
+        if self._host_capabilities_xml is None:
+            self._host_capabilities_xml = ElementTree.fromstring(self.virt.getCapabilities())
+        return self._host_capabilities_xml
+
+    def _remote_host_id(self):
         if self._host_uuid is None:
-            xml = ElementTree.fromstring(self.virt.getCapabilities())
-            self._host_uuid = xml.find('host/uuid').text
+            if self.config.hypervisor_id == 'uuid':
+                self._host_uuid = self.host_capabilities_xml.find('host/uuid').text
+            elif self.config.hypervisor_id == 'hostname':
+                self._host_uuid = self.virt.getHostname()
+            else:
+                raise virt.VirtError('Reporting of hypervisor %s is not implemented in %s backend' %
+                                     (self.config.hypervisor_id, self.CONFIG_TYPE))
         return self._host_uuid
 
+    def _remote_host_name(self):
+        if self._host_name is None:
+            try:
+                self._host_name = self.host_capabilities_xml.find('host/name').text
+            except AttributeError:
+                self._host_name = None
+        return self._host_name
+
+    def _remote_host_sockets(self):
+        if self._host_socket_count is None:
+            try:
+                self._host_socket_count = self.host_capabilities_xml.find('host/cpu/topology').get('sockets')
+            except AttributeError:
+                self._host_socket_count = None
+        return self._host_socket_count
+
     def _getHostGuestMapping(self):
-        mapping = {
-            self._remote_host_uuid(): self._listDomains()
+        mapping = {'hypervisors': []}
+        facts = {
+            'cpu.cpu_socket(s)': self._remote_host_sockets()
+
         }
+        host = virt.Hypervisor(hypervisorId=self._remote_host_id(),
+                               guestIds=self._listDomains(),
+                               name=self._remote_host_name(),
+                               facts=facts)
+        mapping['hypervisors'].append(host)
         return mapping
-
-
-def eventToString(event):
-    eventStrings = ("Defined", "Undefined", "Started", "Suspended", "Resumed",
-                    "Stopped", "Shutdown")
-    try:
-        return eventStrings[event]
-    except IndexError:
-        return "Unknown (%d)" % event
-
-
-def detailToString(event, detail):
-    eventStrings = (
-        ("Added", "Updated"), # Defined
-        ("Removed", ), # Undefined
-        ("Booted", "Migrated", "Restored", "Snapshot", "Wakeup"), # Started
-        ("Paused", "Migrated", "IOError", "Watchdog", "Restored", "Snapshot"), # Suspended
-        ("Unpaused", "Migrated", "Snapshot"), # Resumed
-        ("Shutdown", "Destroyed", "Crashed", "Migrated", "Saved", "Failed", "Snapshot"), # Stopped
-        ("Finished",), # Shutdown
-    )
-    try:
-        return eventStrings[event][detail]
-    except IndexError:
-        return "Unknown (%d)" % detail

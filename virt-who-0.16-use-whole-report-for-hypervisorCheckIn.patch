@@ -1,0 +1,376 @@
+commit f92747336c2f6bda5423ab7d0376fbf6cd2d4039
+Author: Radek Novacek <rnovacek@redhat.com>
+Date:   Tue Jan 26 15:12:31 2016 +0100
+
+    Use whole report as argument to hypervisorCheckIn and sendVirtGuests
+    
+    Previously, the report was split to config, mapping, and type and these
+    were used as arguments to hypervisorCheckIn. Now report as whole is put
+    to hypervisorCheckIn. The same applies to sendVirtGuests
+
+diff --git a/manager/manager.py b/manager/manager.py
+index e32e820..d7308b0 100644
+--- a/manager/manager.py
++++ b/manager/manager.py
+@@ -28,10 +28,11 @@ class ManagerFatalError(Exception):
+ 
+ 
+ class Manager(object):
+-    def sendVirtGuests(self, domains):
++    def sendVirtGuests(self, report, options=None):
+         raise NotImplementedError()
+ 
+-    def hypervisorCheckIn(self, config, mapping, type=None, options=None):
++    def hypervisorCheckIn(self, report, options=None):
++        raise NotImplementedError()
+         raise NotImplementedError()
+ 
+     @classmethod
+diff --git a/manager/satellite/satellite.py b/manager/satellite/satellite.py
+index 4ea8f50..f618d78 100644
+--- a/manager/satellite/satellite.py
++++ b/manager/satellite/satellite.py
+@@ -143,12 +143,13 @@ class Satellite(Manager):
+ 
+         return events
+ 
+-    def sendVirtGuests(self, domains):
++    def sendVirtGuests(self, report, options=None):
+         raise SatelliteError("virt-who does not support sending local hypervisor "
+                              "data to satellite; use rhn-virtualization-host instead")
+ 
+-    def hypervisorCheckIn(self, config, mapping, type=None, options=None):
+-        self._connect(config)
++    def hypervisorCheckIn(self, report, options=None):
++        mapping = report.association
++        self._connect(report.config)
+ 
+         hypervisor_count = len(mapping['hypervisors'])
+         guest_count = sum(len(hypervisor.guestIds) for hypervisor in mapping['hypervisors'])
+@@ -160,10 +161,10 @@ class Satellite(Manager):
+ 
+         for hypervisor in mapping['hypervisors']:
+             self.logger.debug("Loading systemid for %s", hypervisor.hypervisorId)
+-            hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId, type=type)
++            hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId, type=report.config.type)
+ 
+             self.logger.debug("Building plan for hypervisor %s: %s", hypervisor.hypervisorId, hypervisor.guestIds)
+-            plan = self._assemble_plan(hypervisor.guestIds, hypervisor.hypervisorId, type=type)
++            plan = self._assemble_plan(hypervisor.guestIds, hypervisor.hypervisorId, type=report.config.type)
+ 
+             try:
+                 self.logger.debug("Sending plan: %s", plan)
+diff --git a/manager/subscriptionmanager/subscriptionmanager.py b/manager/subscriptionmanager/subscriptionmanager.py
+index c13b88e..6685ae7 100644
+--- a/manager/subscriptionmanager/subscriptionmanager.py
++++ b/manager/subscriptionmanager/subscriptionmanager.py
+@@ -120,13 +120,13 @@ class SubscriptionManager(Manager):
+         if not self.connection.ping()['result']:
+             raise SubscriptionManagerError("Unable to obtain status from server, UEPConnection is likely not usable.")
+ 
+-    def sendVirtGuests(self, guests):
++    def sendVirtGuests(self, report, options=None):
+         """
+         Update consumer facts with info about virtual guests.
+ 
+         `guests` is a list of `Guest` instances (or it children).
+         """
+-
++        guests = report.guests
+         self._connect()
+ 
+         # Sort the list
+@@ -141,11 +141,12 @@ class SubscriptionManager(Manager):
+         except rhsm_connection.GoneException:
+             raise ManagerError("Communication with subscription manager failed: consumer no longer exists")
+ 
+-    def hypervisorCheckIn(self, config, mapping, type=None, options=None):
++    def hypervisorCheckIn(self, report, options=None):
+         """ Send hosts to guests mapping to subscription manager. """
++        mapping = report.association
+         serialized_mapping = {}
+ 
+-        self._connect(config)
++        self._connect(report.config)
+         self.logger.debug("Checking if server has capability 'hypervisor_async'")
+         is_async = hasattr(self.connection, 'has_capability') and self.connection.has_capability('hypervisors_async')
+         if is_async and os.environ.get('VIRTWHO_DISABLE_ASYNC', '').lower() in ['1', 'yes', 'true']:
+@@ -171,12 +172,12 @@ class SubscriptionManager(Manager):
+         self.logger.debug("Host-to-guest mapping: %s", json.dumps(serialized_mapping, indent=4))
+         try:
+             try:
+-                result = self.connection.hypervisorCheckIn(config.owner, config.env, serialized_mapping, options=options)  # pylint:disable=unexpected-keyword-arg
++                result = self.connection.hypervisorCheckIn(report.config.owner, report.config.env, serialized_mapping, options=options)  # pylint:disable=unexpected-keyword-arg
+             except TypeError:
+                 # This is temporary workaround until the options parameter gets implemented
+                 # in python-rhsm
+                 self.logger.debug("hypervisorCheckIn method in python-rhsm doesn't understand options paramenter, ignoring")
+-                result = self.connection.hypervisorCheckIn(config.owner, config.env, serialized_mapping)
++                result = self.connection.hypervisorCheckIn(report.config.owner, report.config.env, serialized_mapping)
+         except BadStatusLine:
+             raise ManagerError("Communication with subscription manager interrupted")
+         except rhsm_connection.GoneException:
+diff --git a/tests/test_manager.py b/tests/test_manager.py
+index c44b01f..51d94ae 100644
+--- a/tests/test_manager.py
++++ b/tests/test_manager.py
+@@ -27,7 +27,7 @@ from base import TestBase
+ from config import Config
+ from manager import Manager, ManagerError
+ 
+-from virt import Guest, Virt, Hypervisor
++from virt import Guest, Virt, Hypervisor, HostGuestAssociationReport, DomainListReport
+ 
+ import rhsm.config as rhsm_config
+ import rhsm.certificate
+@@ -45,12 +45,14 @@ class TestManager(TestBase):
+     guest2 = Guest('d5ffceb5-f79d-41be-a4c1-204f836e144a', xvirt, Guest.STATE_SHUTOFF, hypervisorType='QEMU')
+     guestInfo = [guest1]
+ 
+-    mapping = {
++    config = Config('test', 'libvirt', owner='OWNER', env='ENV')
++    host_guest_report = HostGuestAssociationReport(config, {
+         'hypervisors': [
+             Hypervisor('9c927368-e888-43b4-9cdb-91b10431b258', []),
+-            Hypervisor('ad58b739-5288-4cbc-a984-bd771612d670', [guest1,guest2])
++            Hypervisor('ad58b739-5288-4cbc-a984-bd771612d670', [guest1, guest2])
+         ]
+-    }
++    })
++    domain_report = DomainListReport(config, [guest1])
+ 
+ 
+ class TestSubscriptionManager(TestManager):
+@@ -82,7 +84,7 @@ class TestSubscriptionManager(TestManager):
+         self.prepare(create_from_file, connection)
+         config = Config('test', 'libvirt')
+         manager = Manager.fromOptions(self.logger, self.options, config)
+-        manager.sendVirtGuests(self.guestInfo)
++        manager.sendVirtGuests(self.domain_report, self.options)
+         manager.connection.updateConsumer.assert_called_with(
+                 ANY,
+                 guest_uuids=[guest.toDict() for guest in self.guestInfo])
+@@ -95,11 +97,11 @@ class TestSubscriptionManager(TestManager):
+         manager = Manager.fromOptions(self.logger, self.options, config)
+         self.options.env = "ENV"
+         self.options.owner = "OWNER"
+-        manager.hypervisorCheckIn(self.options, self.mapping, options=self.options)
++        manager.hypervisorCheckIn(self.host_guest_report, self.options)
+         manager.connection.hypervisorCheckIn.assert_called_with(
+                 self.options.owner,
+                 self.options.env,
+-                dict((host.hypervisorId, [guest.toDict() for guest in host.guestIds]) for host in self.mapping['hypervisors']), options=self.options)
++                dict((host.hypervisorId, [guest.toDict() for guest in host.guestIds]) for host in self.host_guest_report.association['hypervisors']), options=self.options)
+ 
+ 
+ class TestSatellite(TestManager):
+@@ -109,7 +111,7 @@ class TestSatellite(TestManager):
+         options = MagicMock()
+         config = Config('test', 'libvirt', sat_server='localhost')
+         manager = Manager.fromOptions(self.logger, options, config)
+-        self.assertRaises(ManagerError, manager.sendVirtGuests, self.guestInfo)
++        self.assertRaises(ManagerError, manager.sendVirtGuests, self.domain_report)
+ 
+     @patch("xmlrpclib.Server")
+     def test_hypervisorCheckIn(self, server):
+@@ -122,13 +124,13 @@ class TestSatellite(TestManager):
+         manager = Manager.fromOptions(self.logger, options, config)
+         options.env = "ENV"
+         options.owner = "OWNER"
+-        manager.hypervisorCheckIn(options, self.mapping, 'ABC')
++        manager.hypervisorCheckIn(self.host_guest_report, options)
+         manager.server.registration.virt_notify.assert_called_with(ANY, [
+             [0, "exists", "system", {"identity": "host", "uuid": "0000000000000000"}],
+             [0, "crawl_began", "system", {}],
+             [0, "exists", "domain", {
+                 "memory_size": 0,
+-                "name": "VM 9c927368-e888-43b4-9cdb-91b10431b258 from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
++                "name": "VM 9c927368-e888-43b4-9cdb-91b10431b258 from libvirt hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
+                 "state": "running",
+                 "uuid": "9c927368e88843b49cdb91b10431b258",
+                 "vcpus": 1,
+@@ -136,7 +138,7 @@ class TestSatellite(TestManager):
+             }],
+             [0, "exists", "domain", {
+                 "memory_size": 0,
+-                "name": "VM d5ffceb5-f79d-41be-a4c1-204f836e144a from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
++                "name": "VM d5ffceb5-f79d-41be-a4c1-204f836e144a from libvirt hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
+                 "state": "shutoff",
+                 "uuid": "d5ffceb5f79d41bea4c1204f836e144a",
+                 "vcpus": 1,
+diff --git a/tests/test_satellite.py b/tests/test_satellite.py
+index 0ef403c..f6dae20 100644
+--- a/tests/test_satellite.py
++++ b/tests/test_satellite.py
+@@ -34,7 +34,7 @@ from mock import MagicMock, patch, ANY
+ from config import Config, ConfigManager
+ from manager import Manager
+ from manager.satellite import Satellite, SatelliteError
+-from virt import Guest, Hypervisor
++from virt import Guest, Hypervisor, HostGuestAssociationReport
+ from virtwho import parseOptions
+ import password
+ from binascii import hexlify
+@@ -128,32 +128,43 @@ class TestSatellite(TestBase):
+     def test_wrong_server(self):
+         options = Options("wrong_server", "abc", "def")
+         s = Satellite(self.logger, options)
+-        #self.assertRaises(SatelliteError, s.connect, "wrong_server", "abc", "def")
+-        options.env = "ENV"
+-        options.owner = "OWNER"
++        config = Config('test', 'libvirt')
++        report = HostGuestAssociationReport(config, self.mapping)
++        self.assertRaises(SatelliteError, s.hypervisorCheckIn, report, options)
+ 
+-        s.hypervisorCheckIn(options, {'hypervisors': []}, "test")
+-        #self.assertRaises(SatelliteError, s.connect, "localhost", "abc", "def")
++    def test_wrong_username(self):
++        options = Options("http://localhost:%s" % TEST_PORT, "wrong", "password")
++        options.force_register = True
++        s = Satellite(self.logger, options)
++        config = Config('test', 'libvirt')
++        report = HostGuestAssociationReport(config, self.mapping)
++        self.assertRaises(SatelliteError, s.hypervisorCheckIn, report, options)
++
++    def test_wrong_password(self):
++        options = Options("http://localhost:%s" % TEST_PORT, "username", "wrong")
++        options.force_register = True
++        s = Satellite(self.logger, options)
++        config = Config('test', 'libvirt')
++        report = HostGuestAssociationReport(config, self.mapping)
++        self.assertRaises(SatelliteError, s.hypervisorCheckIn, report, options)
+ 
+     def test_new_system(self):
+         options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
+         options.force_register = True
+         s = Satellite(self.logger, options)
+ 
+-        # Register with wrong username
+-        #self.assertRaises(SatelliteError, s.connect, "http://localhost:8080", "wrong", "password", force_register=True)
+-
+-        # Register with wrong password
+-        #self.assertRaises(SatelliteError, s.connect, "http://localhost:8080", "username", "wrong", force_register=True)
++        config = Config('test', 'libvirt')
++        report = HostGuestAssociationReport(config, self.mapping)
++        s.hypervisorCheckIn(report, options)
+ 
+     def test_hypervisorCheckIn(self):
+         options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
+         options.force_register = True
+-        options.env = "ENV"
+-        options.owner = "OWNER"
+         s = Satellite(self.logger, options)
+ 
+-        result = s.hypervisorCheckIn(options, self.mapping, "type")
++        config = Config('test', 'libvirt')
++        report = HostGuestAssociationReport(config, self.mapping)
++        result = s.hypervisorCheckIn(report, options)
+         self.assertTrue("failedUpdate" in result)
+         self.assertTrue("created" in result)
+         self.assertTrue("updated" in result)
+@@ -166,13 +177,13 @@ class TestSatellite(TestBase):
+         f.close()
+ 
+         options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
+-        options.env = "ENV"
+-        options.owner = "OWNER"
+         s = Satellite(self.logger, options)
+ 
+         s.HYPERVISOR_SYSTEMID_FILE = filename.replace(TEST_SYSTEM_ID, '%s')
+ 
+-        result = s.hypervisorCheckIn(options, self.mapping, "type")
++        config = Config('test', 'libvirt')
++        report = HostGuestAssociationReport(config, self.mapping)
++        result = s.hypervisorCheckIn(report, options)
+         self.assertTrue("failedUpdate" in result)
+         self.assertTrue("created" in result)
+         self.assertTrue("updated" in result)
+@@ -182,7 +193,9 @@ class TestSatellite(TestBase):
+         options.force_register = True
+         config = Config('test', 'libvirt', sat_server="http://localhost:%s" % TEST_PORT, sat_username='username', sat_password='password')
+         s = Satellite(self.logger, options)
+-        result = s.hypervisorCheckIn(config, self.mapping, "type")
++
++        report = HostGuestAssociationReport(config, self.mapping)
++        result = s.hypervisorCheckIn(report, options)
+         self.assertTrue("failedUpdate" in result)
+         self.assertTrue("created" in result)
+         self.assertTrue("updated" in result)
+@@ -200,7 +213,8 @@ class TestSatellite(TestBase):
+                             sat_encrypted_password=hexlify(password.Password.encrypt('password')))
+             s = Manager.fromOptions(self.logger, options, config)
+             self.assertTrue(isinstance(s, Satellite))
+-            result = s.hypervisorCheckIn(config, self.mapping, "type")
++            report = HostGuestAssociationReport(config, self.mapping)
++            result = s.hypervisorCheckIn(report, options)
+         self.assertTrue("failedUpdate" in result)
+         self.assertTrue("created" in result)
+         self.assertTrue("updated" in result)
+diff --git a/tests/test_subscriptionmanager.py b/tests/test_subscriptionmanager.py
+index 10160b6..06c2705 100644
+--- a/tests/test_subscriptionmanager.py
++++ b/tests/test_subscriptionmanager.py
+@@ -11,7 +11,7 @@ from base import TestBase
+ from config import Config, ConfigManager
+ from manager import Manager
+ from manager.subscriptionmanager import SubscriptionManager
+-from virt import Guest, Hypervisor
++from virt import Guest, Hypervisor, HostGuestAssociationReport, DomainListReport
+ from virtwho import parseOptions
+ 
+ import rhsm.config
+@@ -53,7 +53,9 @@ class TestSubscriptionManager(TestBase):
+ 
+     @patch('rhsm.connection.UEPConnection')
+     def test_sendVirtGuests(self, rhsmconnection):
+-        self.sm.sendVirtGuests(self.guestList)
++        config = Config('test', 'libvirt')
++        report = DomainListReport(config, self.guestList)
++        self.sm.sendVirtGuests(report)
+         self.sm.connection.updateConsumer.assert_called_with(123, guest_uuids=[g.toDict() for g in self.guestList])
+ 
+     @patch('rhsm.connection.UEPConnection')
+@@ -63,7 +65,8 @@ class TestSubscriptionManager(TestBase):
+         config = Config("test", "esx", owner=owner, env=env)
+         # Ensure the data takes the proper for for the old API
+         rhsmconnection.return_value.has_capability.return_value = False
+-        self.sm.hypervisorCheckIn(config, self.mapping)
++        report = HostGuestAssociationReport(config, self.mapping)
++        self.sm.hypervisorCheckIn(report)
+ 
+         self.sm.connection.hypervisorCheckIn.assert_called_with(
+             owner,
+@@ -77,7 +80,8 @@ class TestSubscriptionManager(TestBase):
+         config = Config("test", "esx", owner=owner, env=env)
+         # Ensure we try out the new API
+         rhsmconnection.return_value.has_capability.return_value = True
+-        self.sm.hypervisorCheckIn(config, self.mapping)
++        report = HostGuestAssociationReport(config, self.mapping)
++        self.sm.hypervisorCheckIn(report)
+         expected = {'hypervisors': [h.toDict() for h in self.mapping['hypervisors']]}
+         self.sm.connection.hypervisorCheckIn.assert_called_with(
+             owner,
+diff --git a/virtwho.py b/virtwho.py
+index 6c613d8..a5b1c9c 100644
+--- a/virtwho.py
++++ b/virtwho.py
+@@ -246,17 +246,14 @@ class VirtWho(object):
+ 
+     def _sendGuestList(self, report):
+         manager = Manager.fromOptions(self.logger, self.options, report.config)
+-        manager.sendVirtGuests(report.guests)
++        manager.sendVirtGuests(report, self.options)
+         self.logger.info("virt-who guest list update successful")
+         self.reports[report.config.hash] = report.hash
+ 
+     def _sendGuestAssociation(self, report):
+         manager = Manager.fromOptions(self.logger, self.options, report.config)
+         manager.addJob = self.addJob
+-        manager.hypervisorCheckIn(report.config,
+-                                  report.association,
+-                                  report.config.type,
+-                                  self.options)
++        manager.hypervisorCheckIn(report, self.options)
+         self.reports[report.config.hash] = report.hash
+ 
+     def update_report_to_send(self, report):

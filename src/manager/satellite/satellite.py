@@ -20,8 +20,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import xmlrpclib
 import pickle
+import json
 
 from manager import Manager, ManagerError
+from virt import Guest
 
 
 class SatelliteError(ManagerError):
@@ -30,6 +32,17 @@ class SatelliteError(ManagerError):
 
     def __str__(self):
         return self.message
+
+
+GUEST_STATE_TO_SATELLITE = {
+    Guest.STATE_RUNNING: 'running',
+    Guest.STATE_BLOCKED: 'blocked',
+    Guest.STATE_PAUSED: 'paused',
+    Guest.STATE_SHUTINGDOWN: 'shutdown',
+    Guest.STATE_SHUTOFF: 'shutoff',
+    Guest.STATE_CRASHED: 'crashed',
+    Guest.STATE_UNKNOWN: 'nostate'
+}
 
 
 class Satellite(Manager):
@@ -42,10 +55,10 @@ class Satellite(Manager):
         self.server = None
         self.options = options
 
-    def _connect(self):
-        server = self.options.sat_server
-        self.username = self.options.sat_username
-        self.password = self.options.sat_password
+    def _connect(self, config):
+        server = config.sat_server or self.options.sat_server
+        self.username = config.sat_username or self.options.sat_username
+        self.password = config.sat_password or self.options.sat_password
 
         if not server.startswith("http://") and not server.startswith("https://"):
             server = "https://%s" % server
@@ -57,7 +70,7 @@ class Satellite(Manager):
         except AttributeError:
             self.force_register = False
 
-        self.logger.debug("Initializing satellite connection to %s" % server)
+        self.logger.debug("Initializing satellite connection to %s", server)
         try:
             self.server = xmlrpclib.Server(server, verbose=0)
         except Exception:
@@ -71,7 +84,7 @@ class Satellite(Manager):
         try:
             if self.force_register:
                 raise IOError()
-            self.logger.debug("Loading system id info from %s" % systemid_filename)
+            self.logger.debug("Loading system id info from %s", systemid_filename)
             new_system = pickle.load(open(systemid_filename, "rb"))
         except IOError:
             # assume file was not found, create a new hypervisor
@@ -86,15 +99,12 @@ class Satellite(Manager):
                 raise SatelliteError("Unable to refresh HW profile: %s" % str(e))
             # save the hypervisor systemid
             try:
-                f = open(systemid_filename, "w")
-                try:
+                with open(systemid_filename, "w") as f:
                     pickle.dump(new_system, f)
-                finally:
-                    f.close()
             except (OSError, IOError) as e:
-                self.logger.error("Unable to write system id to %s: %s" % (systemid_filename, str(e)))
+                self.logger.error("Unable to write system id to %s: %s", systemid_filename, str(e))
 
-            self.logger.debug("New system created in satellite, system id saved in %s" % systemid_filename)
+            self.logger.debug("New system created in satellite, system id saved in %s", systemid_filename)
 
         if new_system is None:
             raise SatelliteError("Unable to register hypervisor %s" % hypervisor_uuid)
@@ -107,7 +117,7 @@ class Satellite(Manager):
         """
         pass
 
-    def _assemble_plan(self, hypervisor_mapping, hypervisor_uuid, type):
+    def _assemble_plan(self, guests, hypervisor_uuid, type):
 
         events = []
 
@@ -116,22 +126,17 @@ class Satellite(Manager):
         stub_instance_info = {
             'vcpus': 1,
             'memory_size': 0,
-            'virt_type': 'fully_virtualized',
-            'state': 'running',
+            'virt_type': 'fully_virtualized'
         }
-
-        # again, remove dashes
-        guest_uuids = []
-        for g_uuid in hypervisor_mapping:
-            guest_uuids.append(str(g_uuid).replace("-", ""))
 
         # TODO: spacewalk wants all zeroes for the hypervisor uuid??
         events.append([0, 'exists', 'system', {'identity': 'host', 'uuid': '0000000000000000'}])
 
         events.append([0, 'crawl_began', 'system', {}])
-        for guest_uuid in guest_uuids:
-            stub_instance_info['uuid'] = guest_uuid
-            stub_instance_info['name'] = "VM from %s hypervisor %s" % (type, hypervisor_uuid)
+        for guest in guests:
+            stub_instance_info['uuid'] = guest.uuid.replace("-", "")
+            stub_instance_info['name'] = "VM %s from %s hypervisor %s" % (guest.uuid, type, hypervisor_uuid)
+            stub_instance_info['state'] = GUEST_STATE_TO_SATELLITE.get(guest.state, "nostate")
             events.append([0, 'exists', 'domain', stub_instance_info.copy()])
 
         events.append([0, 'crawl_ended', 'system', {}])
@@ -139,28 +144,33 @@ class Satellite(Manager):
         return events
 
     def sendVirtGuests(self, domains):
-        raise SatelliteError("virt-who does not support sending local hypervisor data to satellite; use rhn-virtualization-host instead")
+        raise SatelliteError("virt-who does not support sending local hypervisor "
+                             "data to satellite; use rhn-virtualization-host instead")
 
-    def hypervisorCheckIn(self, config, mapping, type=None):
-        self._connect()
+    def hypervisorCheckIn(self, config, mapping, type=None, options=None):
+        self._connect(config)
 
-        self.logger.info("Sending update in hosts-to-guests mapping: %s" % mapping)
+        hypervisor_count = len(mapping['hypervisors'])
+        guest_count = sum(len(hypervisor.guestIds) for hypervisor in mapping['hypervisors'])
+        self.logger.info("Sending update in hosts-to-guests mapping: %d hypervisors and %d guests found", hypervisor_count, guest_count)
+        serialized_mapping = {'hypervisors': [h.toDict() for h in mapping['hypervisors']]}
+        self.logger.debug("Host-to-guest mapping: %s", json.dumps(serialized_mapping, indent=4))
         if len(mapping) == 0:
             self.logger.info("no hypervisors found, not sending data to satellite")
 
-        for hypervisor_uuid, guest_uuids in mapping.items():
-            self.logger.debug("Loading systemid for %s" % hypervisor_uuid)
-            hypervisor_systemid = self._load_hypervisor(hypervisor_uuid, type=type)
+        for hypervisor in mapping['hypervisors']:
+            self.logger.debug("Loading systemid for %s", hypervisor.hypervisorId)
+            hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId, type=type)
 
-            self.logger.debug("Building plan for hypervisor %s: %s" % (hypervisor_uuid, guest_uuids))
-            plan = self._assemble_plan(guest_uuids, hypervisor_uuid, type=type)
+            self.logger.debug("Building plan for hypervisor %s: %s", hypervisor.hypervisorId, hypervisor.guestIds)
+            plan = self._assemble_plan(hypervisor.guestIds, hypervisor.hypervisorId, type=type)
 
             try:
-                self.logger.debug("Sending plan: %s" % plan)
+                self.logger.debug("Sending plan: %s", plan)
                 self.server.registration.virt_notify(hypervisor_systemid["system_id"], plan)
             except Exception as e:
-                self.logger.exception("Unable to send host/guest assocaition to the satellite:")
-                raise SatelliteError("Unable to send host/guest assocaition to the satellite: %s" % str(e))
+                self.logger.exception("Unable to send host/guest association to the satellite:")
+                raise SatelliteError("Unable to send host/guest association to the satellite: %s" % str(e))
 
         # TODO: figure out what to populate here
         result = {}
@@ -172,4 +182,3 @@ class Satellite(Manager):
     def uuid(self):
         """ not implemented """
         return '0000000000000000'
-

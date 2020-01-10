@@ -21,28 +21,20 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 import os
 import sys
 import suds
-from suds.transport.http import HttpTransport as SudsHttpTransport
 import logging
-from datetime import datetime
+from time import time
 from urllib2 import URLError
 import socket
 from collections import defaultdict
+from httplib import HTTPException
 
 import virt
 
-class WellBehavedHttpTransport(SudsHttpTransport):
-    """
-    HttpTransport which properly obeys the ``*_proxy`` environment variables.
-
-    Taken from https://gist.github.com/rbarrois/3721801
-    """
-    def u2handlers(self):
-        return []
 
 
 class Esx(virt.Virt):
     CONFIG_TYPE = "esx"
-    MAX_WAIT_TIME = 1800 # 30 minutes
+    MAX_WAIT_TIME = 1800  # 30 minutes
 
     def __init__(self, logger, config):
         super(Esx, self).__init__(logger, config)
@@ -56,106 +48,174 @@ class Esx(virt.Virt):
             self.url = "https://%s" % self.url
 
         self.filter = None
+        self.sc = None
 
-    def _run(self):
+    def _prepare(self):
+        """ Prepare for obtaining information from ESX server. """
         self.logger.debug("Log into ESX")
         self.login()
 
         self.logger.debug("Creating ESX event filter")
         self.filter = self.createFilter()
 
+    def _cancel_wait(self):
+        try:
+            self.client.service.CancelWaitForUpdates(_this=self.sc.propertyCollector)
+        except Exception:
+            pass
+
+    def _run(self):
+        self._prepare()
+
         version = ''
+        last_version = 'last_version'  # Bogus value so version != last_version from the start
         self.hosts = defaultdict(Host)
         self.vms = defaultdict(VM)
-        start_time = end_time = datetime.now()
+        start_time = end_time = time()
+        initial = True
 
-        while self._oneshot or not self._terminate_event.is_set():
+        while self._oneshot or not self.is_terminated():
             delta = end_time - start_time
-            # for python2.6, 2.7 has total_seconds method
-            delta_seconds = ((delta.days * 86400 + delta.seconds) * 10**6 + delta.microseconds) / 10**6
-            wait_time = self._interval - int(delta_seconds)
-            if wait_time <= 0:
-                self.logger.debug("Getting the host/guests association took too long, interval waiting is skipped")
-                version = ''
 
-            start_time = datetime.now()
+            if initial:
+                # We want to read the update asap
+                max_wait_seconds = 0
+            else:
+                if delta - self._interval > 2.0:
+                    # The update took longer than it should, don't wait so long next time
+                    max_wait_seconds = max(self._interval - int(delta - self._interval), 0)
+                    self.logger.debug(
+                        "Getting the host/guests association took too long,"
+                        "interval waiting is shortened to %s", max_wait_seconds)
+                else:
+                    max_wait_seconds = self._interval
+
             if version == '':
-                # We want to read the update no matter how long it will take
-                self.client.set_options(timeout=self.MAX_WAIT_TIME)
                 # also, clean all data we have
                 self.hosts.clear()
                 self.vms.clear()
-            else:
-                self.client.set_options(timeout=wait_time)
 
+            start_time = time()
             try:
-                updateSet = self.client.service.WaitForUpdatesEx(_this=self.sc.propertyCollector, version=version)
-            except socket.error:
+                # Make sure that WaitForUpdatesEx finishes even
+                # if the ESX shuts down in the middle of waiting
+                self.client.set_options(timeout=max_wait_seconds + 5)
+
+                updateSet = self.client.service.WaitForUpdatesEx(
+                    _this=self.sc.propertyCollector,
+                    version=version,
+                    options={'maxWaitSeconds': max_wait_seconds})
+                initial = False
+            except (socket.error, URLError):
                 self.logger.debug("Wait for ESX event finished, timeout")
-                # Cancel the update
-                try:
-                    self.client.service.CancelWaitForUpdates(_this=self.sc.propertyCollector)
-                except Exception:
-                    pass
+                self._cancel_wait()
                 # Get the initial update again
                 version = ''
+                initial = True
                 continue
-            except suds.WebFault:
-                self.logger.exception("Waiting for ESX events fails:")
+            except (suds.WebFault, HTTPException) as e:
+                suppress_exception = False
                 try:
-                    self.client.service.CancelWaitForUpdates(_this=self.sc.propertyCollector)
+                    if e.fault.faultstring == 'The session is not authenticated.':
+                        # Do not print the exception if we get 'not authenticated',
+                        # it's quite normal behaviour and nothing to worry about
+                        suppress_exception = True
                 except Exception:
                     pass
+                if not suppress_exception:
+                    self.logger.exception("Waiting for ESX events fails:")
+                self._cancel_wait()
                 version = ''
+                self._prepare()
+                start_time = end_time = time()
                 continue
 
             if updateSet is not None:
                 version = updateSet.version
                 self.applyUpdates(updateSet)
 
-            assoc = self.getHostGuestMapping()
-            self._queue.put(virt.HostGuestAssociationReport(self.config, assoc))
-            end_time = datetime.now()
+            if hasattr(updateSet, 'truncated') and updateSet.truncated:
+                continue
+
+            if last_version != version:
+                assoc = self.getHostGuestMapping()
+                self.enqueue(virt.HostGuestAssociationReport(self.config, assoc))
+                last_version = version
+
+            end_time = time()
 
             if self._oneshot:
                 break
 
             self.logger.debug("Waiting for ESX changes")
 
-        try:
-            self.client.service.CancelWaitForUpdates(_this=self.sc.propertyCollector)
-        except Exception:
-            pass
+        self.cleanup()
+
+    def cleanup(self):
+        self._cancel_wait()
 
         if self.filter is not None:
             self.client.service.DestroyPropertyFilter(self.filter)
+            self.filter = None
+
+        self.logout()
 
     def getHostGuestMapping(self):
-        mapping = {}
+        mapping = {'hypervisors': []}
         for host_id, host in self.hosts.items():
             parent = host['parent'].value
-            if parent in self.config.exclude_host_parents:
-                self.logger.debug("Skipping host '%s' because its parent '%s' is excluded" % (host_id, parent))
+            if self.config.exclude_host_parents is not None and parent in self.config.exclude_host_parents:
+                self.logger.debug("Skipping host '%s' because its parent '%s' is excluded", host_id, parent)
                 continue
-            if len(self.config.filter_host_parents) > 0 and parent not in self.config.filter_host_parents:
-                self.logger.debug("Skipping host '%s' because its parent '%s' is not included" % (host_id, parent))
+            if self.config.filter_host_parents is not None and parent not in self.config.filter_host_parents:
+                self.logger.debug("Skipping host '%s' because its parent '%s' is not included", host_id, parent)
                 continue
-
             guests = []
-            uuid = host['hardware.systemInfo.uuid']
-            mapping[uuid] = guests
-            if not host['vm']:
+
+            try:
+                if self.config.hypervisor_id == 'uuid':
+                    uuid = host['hardware.systemInfo.uuid']
+                elif self.config.hypervisor_id == 'hwuuid':
+                    uuid = host_id
+                elif self.config.hypervisor_id == 'hostname':
+                    uuid = "%(config.network.dnsConfig.hostName)s.%(config.network.dnsConfig.domainName)s" % host
+                else:
+                    raise virt.VirtError('Reporting of hypervisor %s is not implemented in %s backend' % (
+                        self.config.hypervisor_id,
+                        self.CONFIG_TYPE))
+            except KeyError:
+                self.logger.debug("Host '%s' doesn't have hypervisor_id property", host_id)
                 continue
-            for vm_id in host['vm'].ManagedObjectReference:
-                if vm_id.value not in self.vms:
-                    self.logger.debug("Host '%s' references non-existing guest '%s'" % (host_id, vm_id.value))
-                    continue
-                vm = self.vms[vm_id.value]
-                if 'config.uuid' not in vm:
-                    self.logger.debug("Guest '%s' doesn't have 'config.uuid' property" % vm_id.value)
-                    continue
-                guests.append(vm['config.uuid'])
-            mapping[uuid] = guests
+            if host['vm']:
+                for vm_id in host['vm'].ManagedObjectReference:
+                    if vm_id.value not in self.vms:
+                        self.logger.debug("Host '%s' references non-existing guest '%s'", host_id, vm_id.value)
+                        continue
+                    vm = self.vms[vm_id.value]
+                    if 'config.uuid' not in vm:
+                        self.logger.debug("Guest '%s' doesn't have 'config.uuid' property", vm_id.value)
+                        continue
+                    state = virt.Guest.STATE_UNKNOWN
+                    try:
+                        if vm['runtime.powerState'] == 'poweredOn':
+                            state = virt.Guest.STATE_RUNNING
+                        elif vm['runtime.powerState'] == 'suspended':
+                            state = virt.Guest.STATE_PAUSED
+                        elif vm['runtime.powerState'] == 'poweredOff':
+                            state = virt.Guest.STATE_SHUTOFF
+                    except KeyError:
+                        self.logger.debug("Guest '%s' doesn't have 'runtime.powerState' property", vm_id.value)
+                    guests.append(virt.Guest(vm['config.uuid'],
+                                             self,
+                                             state,
+                                             hypervisorType=host.get('config.product.name', 'vmware'),
+                                             hypervisorVersion=host.get('config.product.version', None)
+                                             ))
+            name = '%(config.network.dnsConfig.hostName)s.%(config.network.dnsConfig.domainName)s' % host
+            facts = {
+                'cpu.cpu_socket(s)': str(host['hardware.cpuInfo.numCpuPackages']),
+            }
+            mapping['hypervisors'].append(virt.Hypervisor(hypervisorId=uuid, guestIds=guests, name=name, facts=facts))
         return mapping
 
     def login(self):
@@ -163,22 +223,30 @@ class Esx(virt.Virt):
         Log into ESX
         """
 
+        kwargs = {}
+        for env in ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY']:
+            if env in os.environ:
+                self.logger.debug("ESX module using proxy: %s", os.environ[env])
+                kwargs['proxy'] = {env.lower().replace('_proxy', ''): os.environ[env]}
+                break
+
         # Connect to the vCenter server
-        if self.config.esx_simplified_vim:
+        if self.config.simplified_vim:
             wsdl = 'file://%s/vimServiceMinimal.wsdl' % os.path.dirname(os.path.abspath(__file__))
-            kwargs = {'cache': None}
+            kwargs['cache'] = None
         else:
             wsdl = self.url + '/sdk/vimService.wsdl'
-            kwargs = {}
         try:
-            self.client = suds.client.Client(wsdl, location="%s/sdk" % self.url, transport=WellBehavedHttpTransport(), **kwargs)
+            self.client = suds.client.Client(wsdl, location="%s/sdk" % self.url, **kwargs)
         except URLError as e:
             self.logger.exception("Unable to connect to ESX")
             raise virt.VirtError(str(e))
 
+        self.client.set_options(timeout=self.MAX_WAIT_TIME)
+
         # Get Meta Object Reference to ServiceInstance which is the root object of the inventory
         self.moRef = suds.sudsobject.Property('ServiceInstance')
-        self.moRef._type = 'ServiceInstance' # pylint: disable=W0212
+        self.moRef._type = 'ServiceInstance'  # pylint: disable=W0212
 
         # Service Content object defines properties of the ServiceInstance object
         self.sc = self.client.service.RetrieveServiceContent(_this=self.moRef)
@@ -193,6 +261,14 @@ class Esx(virt.Virt):
             self.logger.exception("Unable to login to ESX")
             raise virt.VirtError(str(e))
 
+    def logout(self):
+        """ Log out from ESX. """
+        try:
+            if self.sc:
+                self.client.service.Logout(_this=self.sc.sessionManager)
+        except Exception as e:
+            self.logger.info("Can't log out from ESX: %s", str(e))
+
     def createFilter(self):
         oSpec = self.objectSpec()
         oSpec.obj = self.sc.rootFolder
@@ -201,9 +277,16 @@ class Esx(virt.Virt):
         pfs = self.propertyFilterSpec()
         pfs.objectSet = [oSpec]
         pfs.propSet = [
-            #self.propertySpec("ManagedEntity", ["name"]),
-            self.createPropertySpec("VirtualMachine", ["config.uuid"]), #"config.guestFullName", "config.guestId", "config.instanceUuid"]),
-            self.createPropertySpec("HostSystem", ["name", "vm", "hardware.systemInfo.uuid", "parent"]) #, "hardware.systemInfo.vendor", "hardware.systemInfo.model"])
+            self.createPropertySpec("VirtualMachine", ["config.uuid", "runtime.powerState"]),
+            self.createPropertySpec("HostSystem", ["name",
+                                                   "vm",
+                                                   "hardware.systemInfo.uuid",
+                                                   "hardware.cpuInfo.numCpuPackages",
+                                                   "parent",
+                                                   "config.product.name",
+                                                   "config.product.version",
+                                                   "config.network.dnsConfig.hostName",
+                                                   "config.network.dnsConfig.domainName"])
         ]
 
         return self.client.service.CreateFilter(_this=self.sc.propertyCollector, spec=pfs, partialUpdates=0)
@@ -212,7 +295,7 @@ class Esx(virt.Virt):
         for filterSet in updateSet.filterSet:
             for objectSet in filterSet.objectSet:
                 if objectSet.kind in ['enter', 'modify']:
-                    if objectSet.obj._type == 'VirtualMachine': # pylint: disable=W0212
+                    if objectSet.obj._type == 'VirtualMachine':  # pylint: disable=W0212
                         vm = self.vms[objectSet.obj.value]
                         for change in objectSet.changeSet:
                             if change.op == 'assign':
@@ -225,18 +308,23 @@ class Esx(virt.Virt):
                             elif change.op == 'add':
                                 vm[change.name].append(change.val)
                             else:
-                                self.logger.error("Unknown change operation: %s" % change.op)
-                    elif objectSet.obj._type == 'HostSystem': # pylint: disable=W0212
+                                self.logger.error("Unknown change operation: %s", change.op)
+                    elif objectSet.obj._type == 'HostSystem':  # pylint: disable=W0212
                         host = self.hosts[objectSet.obj.value]
                         for change in objectSet.changeSet:
-                            host[change.name] = change.val
+                            if change.op == 'indirectRemove':
+                                # Host has been added but without sufficient data
+                                # It will be filled in next update
+                                pass
+                            elif change.op == 'assign':
+                                host[change.name] = change.val
                 elif objectSet.kind == 'leave':
-                    if objectSet.obj._type == 'VirtualMachine': # pylint: disable=W0212
+                    if objectSet.obj._type == 'VirtualMachine':  # pylint: disable=W0212
                         del self.vms[objectSet.obj.value]
-                    elif objectSet.obj._type == 'HostSystem': # pylint: disable=W0212
+                    elif objectSet.obj._type == 'HostSystem':  # pylint: disable=W0212
                         del self.hosts[objectSet.obj.value]
                 else:
-                    self.logger.error("Unkown update objectSet type: %s" % objectSet.kind)
+                    self.logger.error("Unkown update objectSet type: %s", objectSet.kind)
 
     def objectSpec(self):
         return self.client.factory.create('ns0:ObjectSpec')
@@ -258,8 +346,8 @@ class Esx(virt.Virt):
         dcToHf = self.createTraversalSpec("dcToHf", "Datacenter", "hostFolder", ["visitFolders"])
         dcToVmf = self.createTraversalSpec("dcToVmf", "Datacenter", "vmFolder", ["visitFolders"])
         hToVm = self.createTraversalSpec("HToVm", "HostSystem", "vm", ["visitFolders"])
-        visitFolders = self.createTraversalSpec("visitFolders", "Folder", "childEntity",
-                ["visitFolders", "dcToHf", "dcToVmf", "crToH", "crToRp", "HToVm", "rpToVm"])
+        visitFolders = self.createTraversalSpec("visitFolders", "Folder", "childEntity", [
+            "visitFolders", "dcToHf", "dcToVmf", "crToH", "crToRp", "HToVm", "rpToVm"])
         return [visitFolders, dcToVmf, dcToHf, crToH, crToRp, rpToRp, hToVm, rpToVm]
 
     def createPropertySpec(self, type, pathSet, all=False):
@@ -304,15 +392,16 @@ if __name__ == '__main__':
         print("Usage: %s url username password" % sys.argv[0])
         sys.exit(0)
 
-    import log
-    logger = log.getLogger(True, False)
+    logger = logging.getLogger('virtwho.esx')
+    logger.addHandler(logging.StreamHandler())
     from config import Config
-    config = Config('esx', 'esx', sys.argv[1], sys.argv[2], sys.argv[3])
-    #config.esx_simplified_vim = False
+    config = Config('esx', 'esx', server=sys.argv[1], username=sys.argv[2],
+                    password=sys.argv[3])
     vsphere = Esx(logger, config)
     from Queue import Queue
     from threading import Event, Thread
     q = Queue()
+
     class Printer(Thread):
         def run(self):
             while True:

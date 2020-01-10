@@ -26,11 +26,11 @@ from mock import MagicMock
 from base import TestBase
 from config import Config
 from virt.vdsm import Vdsm
-from virt import VirtError
+from virt import VirtError, Guest
 import xmlrpclib
 
 
-class TestEsx(TestBase):
+class TestVdsm(TestBase):
     def setUp(self):
         config = Config('test', 'vdsm')
 
@@ -48,14 +48,17 @@ class TestEsx(TestBase):
             },
             'vmList': [
                 {
-                    'vmId': '1'
+                    'vmId': '1',
+                    'status': 'Down'
                 }, {
-                    'vmId': '2'
+                    'vmId': '2',
+                    'status': 'Up'
                 }, {
-                    'vmId': '3'
+                    'vmId': '3',
+                    'status': 'Up'
                 }
             ]
         }
         domains = self.vdsm.listDomains()
-        self.assertEquals(domains, ['1', '2', '3'])
-        self.vdsm.server.list.assert_called_once()
+        self.assertEquals([d.uuid for d in domains], ['1', '2', '3'])
+        self.vdsm.server.list.assert_called_once_with(True)
