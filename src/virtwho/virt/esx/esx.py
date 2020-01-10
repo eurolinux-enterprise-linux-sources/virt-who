@@ -36,6 +36,7 @@ from collections import defaultdict
 from httplib import HTTPException
 
 from virtwho import virt
+from virtwho.config import VirtConfigSection
 
 
 class FileAdapter(requests.adapters.BaseAdapter):
@@ -109,16 +110,16 @@ class Esx(virt.Virt):
     CONFIG_TYPE = "esx"
     MAX_WAIT_TIME = 300  # 5 minutes
 
-    def __init__(self, logger, config):
-        super(Esx, self).__init__(logger, config)
-        self.url = config.server
-        self.username = config.username
-        self.password = config.password
+    def __init__(self, logger, config, dest, terminate_event=None,
+                 interval=None, oneshot=False):
+        super(Esx, self).__init__(logger, config, dest,
+                                  terminate_event=terminate_event,
+                                  interval=interval,
+                                  oneshot=oneshot)
+        self.url = config['server']
+        self.username = config['username']
+        self.password = config['password']
         self.config = config
-
-        # Url must contain protocol (usually https://)
-        if "://" not in self.url:
-            self.url = "https://%s" % self.url
 
         self.filter = None
         self.sc = None
@@ -174,7 +175,7 @@ class Esx(virt.Virt):
                     version=version,
                     options=options)
                 initial = False
-            except (socket.error, URLError):
+            except (socket.error, URLError, requests.exceptions.Timeout):
                 self.logger.debug("Wait for ESX event finished, timeout")
                 self._cancel_wait()
                 # Get the initial update again
@@ -212,14 +213,22 @@ class Esx(virt.Virt):
 
             if last_version != version or time() > next_update:
                 assoc = self.getHostGuestMapping()
-                self.enqueue(virt.HostGuestAssociationReport(self.config, assoc))
-                next_update = time() + self._interval
+                self._send_data(virt.HostGuestAssociationReport(self.config, assoc))
+                next_update = time() + self.interval
                 last_version = version
 
             if self._oneshot:
                 break
 
         self.cleanup()
+
+    def _format_hostname(self, host, domain):
+        return u'{0}.{1}'.format(host, domain)
+
+    def stop(self):
+        # We need to ensure that when we stop the thread, we clean up and exit the wait
+        self.cleanup()
+        super(Esx, self).stop()
 
     def cleanup(self):
         self._cancel_wait()
@@ -237,31 +246,23 @@ class Esx(virt.Virt):
         mapping = {'hypervisors': []}
         for host_id, host in self.hosts.items():
             parent = host['parent'].value
-            if self.config.exclude_host_parents is not None and parent in self.config.exclude_host_parents:
+            if self.config['exclude_host_parents'] is not None and parent in self.config['exclude_host_parents']:
                 self.logger.debug("Skipping host '%s' because its parent '%s' is excluded", host_id, parent)
                 continue
-            if self.config.filter_host_parents is not None and parent not in self.config.filter_host_parents:
+            if self.config['filter_host_parents'] is not None and parent not in self.config['filter_host_parents']:
                 self.logger.debug("Skipping host '%s' because its parent '%s' is not included", host_id, parent)
                 continue
             guests = []
 
-            try:
-                if self.config.hypervisor_id == 'uuid':
-                    uuid = host['hardware.systemInfo.uuid']
-                elif self.config.hypervisor_id == 'hwuuid':
-                    uuid = host_id
-                elif self.config.hypervisor_id == 'hostname':
-                    uuid = host['config.network.dnsConfig.hostName']
-                    domain_name = host['config.network.dnsConfig.domainName']
-                    if domain_name:
-                        uuid = '{0}.{1}'.format(uuid, domain_name)
-                else:
-                    raise virt.VirtError(
-                        'Invalid option %s for hypervisor_id, use one of: uuid, hwuuid, or hostname' %
-                        self.config.hypervisor_id)
-            except KeyError:
-                self.logger.debug("Host '%s' doesn't have hypervisor_id property", host_id)
-                continue
+            if self.config['hypervisor_id'] == 'uuid':
+                uuid = host['hardware.systemInfo.uuid']
+            elif self.config['hypervisor_id'] == 'hwuuid':
+                uuid = host_id
+            elif self.config['hypervisor_id'] == 'hostname':
+                uuid = host['config.network.dnsConfig.hostName']
+                domain_name = host['config.network.dnsConfig.domainName']
+                if domain_name:
+                    uuid = self._format_hostname(uuid, domain_name)
             if host['vm']:
                 for vm_id in host['vm'].ManagedObjectReference:
                     if vm_id.value not in self.vms:
@@ -284,12 +285,12 @@ class Esx(virt.Virt):
                             state = virt.Guest.STATE_SHUTOFF
                     except KeyError:
                         self.logger.debug("Guest '%s' doesn't have 'runtime.powerState' property", vm_id.value)
-                    guests.append(virt.Guest(vm['config.uuid'], self, state))
+                    guests.append(virt.Guest(vm['config.uuid'], self.CONFIG_TYPE, state))
             try:
                 name = host['config.network.dnsConfig.hostName']
                 domain_name = host['config.network.dnsConfig.domainName']
                 if domain_name:
-                    name = '{0}.{1}'.format(name, domain_name)
+                    name = self._format_hostname(name, domain_name)
             except KeyError:
                 self.logger.debug("Unable to determine hostname for host '%s'", uuid)
                 name = ''
@@ -312,7 +313,7 @@ class Esx(virt.Virt):
 
         kwargs = {'transport': RequestsTransport()}
         # Connect to the vCenter server
-        if self.config.simplified_vim:
+        if self.config['simplified_vim']:
             wsdl = 'file://%s/vimServiceMinimal.wsdl' % os.path.dirname(os.path.abspath(__file__))
             kwargs['cache'] = None
         else:
@@ -338,7 +339,11 @@ class Esx(virt.Virt):
         try:
             # Don't log message containing password
             logging.getLogger('suds.client').setLevel(logging.CRITICAL)
-            self.client.service.Login(_this=self.sc.sessionManager, userName=self.username, password=self.password)
+            self.client.service.Login(
+                _this=self.sc.sessionManager,
+                userName=unicode(self.username, 'utf-8'),
+                password=unicode(self.password, 'utf-8')
+            )
             logging.getLogger('suds.client').setLevel(logging.ERROR)
         except requests.RequestException as e:
             raise virt.VirtError(str(e))
@@ -383,37 +388,45 @@ class Esx(virt.Virt):
     def applyUpdates(self, updateSet):
         for filterSet in updateSet.filterSet:
             for objectSet in filterSet.objectSet:
-                if objectSet.kind in ['enter', 'modify']:
-                    if objectSet.obj._type == 'VirtualMachine':  # pylint: disable=W0212
-                        vm = self.vms[objectSet.obj.value]
-                        for change in objectSet.changeSet:
-                            if change.op == 'assign' and hasattr(change, 'val'):
-                                vm[change.name] = change.val
-                            elif change.op in ['remove', 'indirectRemove']:
-                                try:
-                                    del vm[change.name]
-                                except KeyError:
-                                    pass
-                            elif change.op == 'add':
-                                vm[change.name].append(change.val)
-                            else:
-                                self.logger.error("Unknown change operation: %s", change.op)
-                    elif objectSet.obj._type == 'HostSystem':  # pylint: disable=W0212
-                        host = self.hosts[objectSet.obj.value]
-                        for change in objectSet.changeSet:
-                            if change.op == 'indirectRemove':
-                                # Host has been added but without sufficient data
-                                # It will be filled in next update
-                                pass
-                            elif change.op == 'assign':
-                                host[change.name] = change.val
-                elif objectSet.kind == 'leave':
-                    if objectSet.obj._type == 'VirtualMachine':  # pylint: disable=W0212
-                        del self.vms[objectSet.obj.value]
-                    elif objectSet.obj._type == 'HostSystem':  # pylint: disable=W0212
-                        del self.hosts[objectSet.obj.value]
+                if objectSet.obj._type == 'VirtualMachine':  # pylint: disable=W0212
+                    self.applyVirtualMachineUpdate(objectSet)
+                elif objectSet.obj._type == 'HostSystem':  # pylint: disable=W0212
+                    self.applyHostSystemUpdate(objectSet)
+
+    def applyVirtualMachineUpdate(self, objectSet):
+        if objectSet.kind in ['enter', 'modify']:
+            vm = self.vms[objectSet.obj.value]
+            for change in objectSet.changeSet:
+                if change.op == 'assign' and hasattr(change, 'val'):
+                    vm[change.name] = change.val
+                elif change.op in ['remove', 'indirectRemove']:
+                    try:
+                        del vm[change.name]
+                    except KeyError:
+                        pass
+                elif change.op == 'add':
+                    vm[change.name].append(change.val)
                 else:
-                    self.logger.error("Unkown update objectSet type: %s", objectSet.kind)
+                    self.logger.error("Unknown change operation: %s", change.op)
+        elif objectSet.kind == 'leave':
+            del self.vms[objectSet.obj.value]
+        else:
+            self.logger.error("Unknown update objectSet type: %s", objectSet.kind)
+
+    def applyHostSystemUpdate(self, objectSet):
+        if objectSet.kind in ['enter', 'modify']:
+            host = self.hosts[objectSet.obj.value]
+            for change in objectSet.changeSet:
+                if change.op == 'indirectRemove':
+                    # Host has been added but without sufficient data
+                    # It will be filled in next update
+                    pass
+                elif change.op == 'assign' and hasattr(change, 'val'):
+                    host[change.name] = change.val
+        elif objectSet.kind == 'leave':
+            del self.hosts[objectSet.obj.value]
+        else:
+            self.logger.error("Unknown update objectSet type: %s", objectSet.kind)
 
     def objectSpec(self):
         return self.client.factory.create('ns0:ObjectSpec')
@@ -475,30 +488,27 @@ class VM(dict):
     def __init__(self):
         self.uuid = None
 
-if __name__ == '__main__':  # pragma: no cover
-    # TODO: read from config
-    if len(sys.argv) < 4:
-        print("Usage: %s url username password" % sys.argv[0])
-        sys.exit(0)
 
-    logger = logging.getLogger('virtwho.esx')
-    logger.addHandler(logging.StreamHandler())
-    from virtwho.config import Config
-    config = Config('esx', 'esx', server=sys.argv[1], username=sys.argv[2],
-                    password=sys.argv[3])
-    vsphere = Esx(logger, config)
-    from Queue import Queue
-    from threading import Event, Thread
-    q = Queue()
+class EsxConfigSection(VirtConfigSection):
+    VIRT_TYPE = 'esx'
+    HYPERVISOR_ID = ('uuid', 'hwuuid', 'hostname')
 
-    class Printer(Thread):
-        def run(self):
-            while True:
-                print(q.get(True).association)
-    p = Printer()
-    p.daemon = True
-    p.start()
-    try:
-        vsphere.start_sync(q, Event())
-    except KeyboardInterrupt:
-        sys.exit(1)
+    def __init__(self, *args, **kwargs):
+        super(EsxConfigSection, self).__init__(*args, **kwargs)
+        self.add_key('server', validation_method=self._validate_server, required=True)
+        self.add_key('username', validation_method=self._validate_username, required=True)
+        self.add_key('password', validation_method=self._validate_unencrypted_password, required=True)
+        self.add_key('env', validation_method=self._validate_env, required=True)
+        self.add_key('owner', validation_method=self._validate_owner, required=True)
+        self.add_key('is_hypervisor', validation_method=self._validate_str_to_bool, default=True)
+        self.add_key('simplified_vim', validation_method=self._validate_str_to_bool, default=True)
+        self.add_key('filter_host_parents', validation_method=self._validate_filter, default=None)
+        self.add_key('exclude_host_parents', validation_method=self._validate_filter, default=None)
+
+    def _validate_server(self, key):
+        error = super(EsxConfigSection, self)._validate_server(key)
+        if error is None:
+            # Url must contain protocol (usually https://)
+            if "://" not in self._values[key]:
+                self._values[key] = "https://%s" % self._values[key]
+        return error

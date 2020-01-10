@@ -1,4 +1,6 @@
 
+import os
+import signal
 import sys
 import socket
 from Queue import Empty
@@ -10,6 +12,8 @@ from tempfile import TemporaryFile
 from fake_sam import FakeSam
 
 import virtwho
+import virtwho.parser
+import virtwho.main
 
 # hack to use unittest2 on python <= 2.6, unittest otherwise
 # based on python version
@@ -62,9 +66,8 @@ class TestBase(TestCase):
         virt-who process (or None if `background` is True) and stdout is
         stdout from the process (or None if `grab_stdout` is False).
         '''
-        oldMinimumSendInterval = virtwho.executor.MinimumSendInterval
-        virtwho.executor.MinimumSendInterval = 2
-        virtwho.parser.MinimumSendInterval = 2
+        old_minimum_send_interval = virtwho.config.MinimumSendInterval
+        virtwho.config.MinimumSendInterval = 2
         virtwho.log.Logger._stream_handler = None
         virtwho.log.Logger._queue_logger = None
         old_stdout = None
@@ -88,8 +91,8 @@ class TestBase(TestCase):
             sys.stdout.close()
             sys.stdout = old_stdout
 
-        virtwho.executor.MinimumSendInterval = oldMinimumSendInterval
-        virtwho.parser.MinimumSendInterval = oldMinimumSendInterval
+        virtwho.config.MinimumSendInterval = old_minimum_send_interval
+
         return code, data
 
     def stop_virtwho(self):
@@ -246,3 +249,53 @@ class VirtBackendTestMixin(object):
 
         assoc = self.wait_for_assoc(5)
         self.check_assoc_updated(assoc)
+
+    def test_exit_on_SIGTERM(self):
+        """
+        This test shows that virt-who exits cleanly in response to the
+        SIGTERM signal
+        """
+        self.run_virtwho(['-i', '2', '-d'] + self.arguments, background=True)
+        self.addCleanup(self.stop_virtwho)
+        self.assertEquals(self.process.is_alive(), True)
+        os.kill(self.process.pid, signal.SIGTERM)
+        self.process.join(timeout=3)
+        self.assertEquals(self.process.is_alive(), False)
+
+    def test_reload_on_SIGHUP(self):
+        """
+        This tests that the rhsm.conf is read once again when the process
+        receives the reload signal
+        """
+        rhsm_conf_path = os.path.join(self.sam.tempdir, 'rhsm.conf')
+        good_rhsm_conf = ''
+        with open(rhsm_conf_path, 'r') as f:
+            good_rhsm_conf = ''.join(line for line in f.readlines())
+        bad_conf = """
+[server]
+hostname = BADHOSTNAME
+prefix = /nogood
+port = {port}1337
+insecure = 1
+proxy_hostname =
+""".format(port=self.sam.port)
+        with open(os.path.join(self.sam.tempdir, 'rhsm.conf'), 'w') as \
+                rhsm_conf_file:
+            rhsm_conf_file.write(bad_conf)
+            rhsm_conf_file.flush()
+        self.run_virtwho(['-i', '2', '-d'] + self.arguments, background=True)
+        self.addCleanup(self.stop_virtwho)
+        self.assertEquals(self.process.is_alive(), True)
+
+        # We expect the queue to be empty until we the appropriate
+        # configuration file is added
+        self.assertRaises(AssertionError, self.wait_for_assoc)
+
+        # Update the configuration file with the good one that came from
+        # fake_sam
+        with open(os.path.join(self.sam.tempdir, 'rhsm.conf'), 'w') as \
+                rhsm_conf_file:
+            rhsm_conf_file.write(good_rhsm_conf)
+        os.kill(self.process.pid, signal.SIGHUP)
+        self.wait_for_assoc(4)
+        self.assertEquals(self.process.is_alive(), True)

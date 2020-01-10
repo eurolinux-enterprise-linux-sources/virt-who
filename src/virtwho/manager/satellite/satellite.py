@@ -47,7 +47,7 @@ GUEST_STATE_TO_SATELLITE = {
 
 
 class Satellite(Manager):
-    smType = "satellite"
+    sm_type = "satellite"
     """ Class for interacting with satellite (RHN Classic). """
     HYPERVISOR_SYSTEMID_FILE = "/var/lib/virt-who/hypervisor-systemid-%s"
 
@@ -58,9 +58,9 @@ class Satellite(Manager):
         self.options = options
 
     def _connect(self, config):
-        server = config.sat_server or self.options.sat_server
-        self.username = config.sat_username or self.options.sat_username
-        self.password = config.sat_password or self.options.sat_password
+        server = config['sat_server']
+        self.username = config['sat_username']
+        self.password = config['sat_password']
 
         if not server.startswith("http://") and not server.startswith("https://"):
             server = "https://%s" % server
@@ -91,7 +91,17 @@ class Satellite(Manager):
             raise SatelliteError("Unable to login to satellite5 server: %s" % str(e))
 
         try:
-            hypervisor_base_channel = self.server_rpcapi.channel.software.getDetails(session, 'hypervisor-base')
+            userdetail = self.server_rpcapi.user.getDetails(session, self.username)
+            org_id = userdetail["org_id"]
+        except Exception as e:
+            self.logger.exception("Unable to get user details")
+            raise SatelliteError("Unable to get user details: %s" % str(e))
+
+        base_channel_name = 'hypervisor-base-%s' % org_id
+        base_channel_label = 'Hypervisor Base - %s' % org_id
+
+        try:
+            hypervisor_base_channel = self.server_rpcapi.channel.software.getDetails(session, base_channel_name)
             self.logger.debug("Using existing hypervisor-base channel")
         except xmlrpclib.Fault as e:
             if e.faultCode == -210:
@@ -106,7 +116,7 @@ class Satellite(Manager):
             # Create the channel
             try:
                 result = self.server_rpcapi.channel.software.create(
-                    session, 'hypervisor-base', 'Hypervisor Base',
+                    session, base_channel_name, base_channel_label,
                     'Channel used by virt-who for hypervisor registration',
                     'channel-x86_64', '')
             except Exception as e:
@@ -116,7 +126,7 @@ class Satellite(Manager):
                 raise SatelliteError("Unable to create hypervisor-base channel, satellite returned code %s" % result)
 
             try:
-                result = self.server_rpcapi.distchannel.setMapForOrg(session, 'Hypervisor OS', 'unknown', 'x86_64', 'hypervisor-base')
+                result = self.server_rpcapi.distchannel.setMapForOrg(session, 'Hypervisor OS', 'unknown', 'x86_64', base_channel_name)
             except Exception as e:
                 self.logger.exception("Unable to create mapping for hypervisor-base channel")
                 raise SatelliteError("Unable to create mapping for hypervisor-base channel: %s" % str(e))
@@ -213,10 +223,12 @@ class Satellite(Manager):
 
         for hypervisor in mapping['hypervisors']:
             self.logger.debug("Loading systemid for %s", hypervisor.hypervisorId)
-            hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId, hypervisor_type=report.config.type)
+            hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId,
+                                                        hypervisor_type=report.config['type'])
 
             self.logger.debug("Building plan for hypervisor %s: %s", hypervisor.hypervisorId, hypervisor.guestIds)
-            plan = self._assemble_plan(hypervisor.guestIds, hypervisor.hypervisorId, hypervisor_type=report.config.type)
+            plan = self._assemble_plan(hypervisor.guestIds, hypervisor.hypervisorId,
+                                       hypervisor_type=report.config['type'])
 
             try:
                 try:
@@ -225,7 +237,8 @@ class Satellite(Manager):
                 except xmlrpclib.Fault as e:
                     if e.faultCode == -9:
                         self.logger.warn("System was deleted from Satellite 5, reregistering")
-                        hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId, hypervisor_type=report.config.type, force=True)
+                        hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId,
+                                                                    hypervisor_type=report.config['type'], force=True)
                         self.server_xmlrpc.registration.virt_notify(hypervisor_systemid["system_id"], plan)
             except Exception as e:
                 self.logger.exception("Unable to send host/guest association to the satellite:")

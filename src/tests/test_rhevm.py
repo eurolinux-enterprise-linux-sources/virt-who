@@ -21,14 +21,15 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 import os
 import requests
 from mock import patch, call, ANY, MagicMock
-from multiprocessing import Queue, Event
+from threading import Event
+from Queue import Queue
 
 from base import TestBase
 from proxy import Proxy
 
-from virtwho.config import Config
-from virtwho.virt.rhevm import RhevM
-from virtwho.virt import VirtError, Guest, Hypervisor
+from virtwho.virt import Virt, VirtError, Guest, Hypervisor
+from virtwho.virt.rhevm.rhevm import RhevmConfigSection
+from virtwho.datastore import Datastore
 
 
 uuids = {
@@ -52,6 +53,7 @@ HOSTS_XML = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <hosts>
     <host href="/api/hosts/{host}" id="{host}">
         <name>hostname.domainname</name>
+        <address>hostname.domainname</address>
         <cluster href="/api/clusters/{cluster}" id="{cluster}"/>
         <cpu>
             <topology sockets="1" cores="6" threads="2"/>
@@ -89,15 +91,24 @@ VMS_XML_STATUS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 
 class TestRhevM(TestBase):
+    @staticmethod
+    def create_config(name, wrapper, **kwargs):
+        config = RhevmConfigSection(name, wrapper)
+        config.update(**kwargs)
+        config.validate()
+        return config
+
     def setUp(self):
-        config = Config('test', 'rhevm', server='localhost', username='username',
+        config = self.create_config(name='test', wrapper=None, type='rhevm', server='localhost', username='username',
                         password='password', owner='owner', env='env')
-        self.rhevm = RhevM(self.logger, config)
+        self.rhevm = Virt.from_config(self.logger, config, Datastore())
+        self.rhevm.major_version = '3'
+        self.rhevm.build_urls()
 
     def run_once(self, queue=None):
-        ''' Run RHEV-M in oneshot mode '''
+        """Run RHEV-M in oneshot mode"""
         self.rhevm._oneshot = True
-        self.rhevm._queue = queue or Queue()
+        self.rhevm.dest = queue or Queue()
         self.rhevm._terminate_event = Event()
         self.rhevm._oneshot = True
         self.rhevm._interval = 0
@@ -105,7 +116,7 @@ class TestRhevM(TestBase):
 
     @patch('requests.get')
     def test_connect(self, get):
-        get.return_value.text = '<xml></xml>'
+        get.return_value.content = '<xml></xml>'
         get.return_value.status_code = 200
         self.run_once()
 
@@ -133,13 +144,13 @@ class TestRhevM(TestBase):
 
     @patch('requests.get')
     def test_404(self, get):
-        get.return_value.text = ''
+        get.return_value.content = ''
         get.return_value.status_code = 404
         self.assertRaises(VirtError, self.run_once)
 
     @patch('requests.get')
     def test_500(self, get):
-        get.return_value.text = ''
+        get.return_value.content = ''
         get.return_value.status_code = 500
         self.assertRaises(VirtError, self.run_once)
 
@@ -151,9 +162,9 @@ class TestRhevM(TestBase):
         expected_guest_state = Guest.STATE_SHUTOFF
 
         get.side_effect = [
-            MagicMock(text=CLUSTERS_XML),
-            MagicMock(text=HOSTS_XML),
-            MagicMock(text=VMS_XML),
+            MagicMock(content=CLUSTERS_XML),
+            MagicMock(content=HOSTS_XML),
+            MagicMock(content=VMS_XML),
         ]
 
         expected_result = Hypervisor(
@@ -162,7 +173,7 @@ class TestRhevM(TestBase):
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.rhevm,
+                    self.rhevm.CONFIG_TYPE,
                     expected_guest_state,
                 )
             ],
@@ -195,9 +206,9 @@ class TestRhevM(TestBase):
         expected_guest_state = Guest.STATE_RUNNING
 
         get.side_effect = [
-            MagicMock(text=CLUSTERS_XML),
-            MagicMock(text=HOSTS_XML),
-            MagicMock(text=VMS_XML_STATUS),
+            MagicMock(content=CLUSTERS_XML),
+            MagicMock(content=HOSTS_XML),
+            MagicMock(content=VMS_XML_STATUS),
         ]
 
         expected_result = Hypervisor(
@@ -206,7 +217,7 @@ class TestRhevM(TestBase):
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.rhevm,
+                    self.rhevm.CONFIG_TYPE,
                     expected_guest_state,
                 )
             ],

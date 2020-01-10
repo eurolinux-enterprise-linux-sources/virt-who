@@ -20,14 +20,15 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import os
 from mock import patch, MagicMock, ANY
-from multiprocessing import Queue, Event
+from threading import Event
+from Queue import Queue
 import requests
 
 from base import TestBase
 from proxy import Proxy
 
-from virtwho.config import Config
-from virtwho.virt.hyperv import HyperV
+from virtwho import DefaultInterval
+from virtwho.virt.hyperv.hyperv import HyperV, HypervConfigSection
 from virtwho.virt import VirtError, Guest, Hypervisor
 
 
@@ -135,14 +136,23 @@ class HyperVMock(object):
 
 class TestHyperV(TestBase):
     def setUp(self):
-        config = Config('test', 'hyperv', server='localhost', username='username',
-                        password='password', owner='owner', env='env')
-        self.hyperv = HyperV(self.logger, config)
+        config_values = {
+            'type': 'hyperv',
+            'server': 'localhost',
+            'username': 'username',
+            'password': 'password',
+            'owner': 'owner',
+            'env': 'env,'
+        }
+        config = HypervConfigSection('test', None)
+        config.update(**config_values)
+        config.validate()
+        self.hyperv = HyperV(self.logger, config, None, interval=DefaultInterval)
 
     def run_once(self, queue=None):
         ''' Run Hyper-V in oneshot mode '''
         self.hyperv._oneshot = True
-        self.hyperv._queue = queue or Queue()
+        self.hyperv.dest = queue or Queue()
         self.hyperv._terminate_event = Event()
         self.hyperv._interval = 0
         self.hyperv._run()
@@ -216,7 +226,7 @@ class TestHyperV(TestBase):
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.hyperv,
+                    self.hyperv.CONFIG_TYPE,
                     expected_guest_state,
                 )
             ],
