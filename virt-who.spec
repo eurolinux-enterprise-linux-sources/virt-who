@@ -6,7 +6,7 @@
 
 Name:           virt-who
 Version:        0.18
-Release:        3%{?dist}
+Release:        6%{?dist}
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
 
 Group:          System Environment/Base
@@ -15,6 +15,9 @@ URL:            https://fedorahosted.org/virt-who/
 Source0:        https://fedorahosted.org/releases/v/i/virt-who/%{name}-%{version}.tar.gz
 Patch0: virt-who-0.18-1-to-virt-who-0.18-2.patch
 Patch1: virt-who-0.18-2-to-virt-who-0.18-3.patch
+Patch2: virt-who-0.18-3-to-virt-who-0.18-4.patch
+Patch3: virt-who-0.18-4-to-virt-who-0.18-5.patch
+Patch4: virt-who-0.18-5-to-virt-who-0.18-6.patch
 BuildRoot:      %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
 BuildArch:      noarch
@@ -51,6 +54,9 @@ report them to the subscription manager.
 %setup -q
 %patch0 -p1
 %patch1 -p1
+%patch2 -p1
+%patch3 -p1
+%patch4 -p1
 
 
 %build
@@ -131,6 +137,16 @@ fi
 
 
 %changelog
+* Fri Nov 03 2017 Christopher Snyder <csnyder@redhat.com> 0.18-6
+- 1507786: Do not send queued reports when they are the same
+  (csnyder@redhat.com)
+
+* Thu Nov 02 2017 Christopher Snyder <csnyder@redhat.com> 0.18-5
+- 1507786: Modification of the job polling frequency (csnyder@redhat.com)
+
+* Wed Nov 01 2017 Christopher Snyder <csnyder@redhat.com> 0.18-4
+- 1507786: Updates to the job polling frequency (csnyder@redhat.com)
+
 * Tue Jan 31 2017 Christopher Snyder <csnyder@redhat.com> 0.18-3
 - Update spec file for RHEL builds (csnyder@redhat.com)
 - 1410000: Include org_id in hv base channel (pcreech@redhat.com)

@@ -1,0 +1,344 @@
+diff --git a/rel-eng/packages/virt-who b/rel-eng/packages/virt-who
+index e1a60ea..c9a61c2 100644
+--- a/rel-eng/packages/virt-who
++++ b/rel-eng/packages/virt-who
+@@ -1 +1 @@
+-0.18-3 ./
++0.18-4 ./
+diff --git a/rel-eng/releasers.conf b/rel-eng/releasers.conf
+index 8db3227..328a32b 100644
+--- a/rel-eng/releasers.conf
++++ b/rel-eng/releasers.conf
+@@ -10,6 +10,11 @@ required_bz_flags = rhel-7.2.0+
+ # are found in the changelog.
+ #placeholder_bz = 1109810
+ 
++[rhel-6.9]
++releaser = tito.release.DistGitReleaser
++branches = rhel-6.9
++required_bz_flags = rhel-6.9.0+
++
+ #[copr-dgoodwin]
+ #releaser = tito.release.CoprReleaser
+ #project_name = virt-who
+diff --git a/rel-eng/tito.props b/rel-eng/tito.props
+index eab3f19..2ebe8b7 100644
+--- a/rel-eng/tito.props
++++ b/rel-eng/tito.props
+@@ -1,5 +1,5 @@
+ [buildconfig]
+-builder = tito.builder.Builder
+-tagger = tito.tagger.VersionTagger
++builder = tito.distributionbuilder.DistributionBuilder
++tagger = tito.tagger.ReleaseTagger
+ changelog_do_not_remove_cherrypick = 0
+ changelog_format = %s (%ae)
+diff --git a/tests/test_virtwho.py b/tests/test_virtwho.py
+index ee02843..43b8951 100644
+--- a/tests/test_virtwho.py
++++ b/tests/test_virtwho.py
+@@ -26,7 +26,7 @@ from mock import patch, Mock, sentinel, ANY, call
+ 
+ from base import TestBase
+ 
+-from virtwho import util
++from virtwho import util, MinimumSendInterval
+ from virtwho.config import Config
+ from virtwho.manager import ManagerThrottleError, ManagerFatalError
+ from virtwho.virt import (
+@@ -361,9 +361,8 @@ class TestSend(TestBase):
+     @patch('virtwho.virt.Virt.fromConfig')
+     def test_send_current_report(self, fromConfig, fromOptions, getLogger, time):
+         initial = 10
+-        time.side_effect = [initial, initial]
++        time.side_effect = [initial, initial, initial]
+ 
+-        fromOptions.return_value = Mock()
+         options = Mock()
+         options.interval = 6
+         options.oneshot = True
+@@ -373,6 +372,12 @@ class TestSend(TestBase):
+         virtwho = Executor(Mock(), options, config_dir="/nonexistant")
+         virtwho.oneshot_remaining = ['config_name']
+ 
++        def check_report_state(report):
++            report.state = AbstractVirtReport.STATE_FINISHED
++
++        fromOptions.return_value = Mock()
++        fromOptions.return_value.check_report_state = Mock(side_effect=check_report_state)
++
+         config = Mock()
+         config.hash = "config_hash"
+         config.name = "config_name"
+@@ -385,13 +390,10 @@ class TestSend(TestBase):
+ 
+         virtwho.send_current_report()
+ 
+-        def check_report_state(report):
+-            report.state = AbstractVirtReport.STATE_FINISHED
+-        virtwho.check_report_state = Mock(side_effect=check_report_state)
+-        virtwho.check_reports_state()
++        virtwho.check_report_state(virtwho.report_in_progress)
+ 
+         virtwho.send.assert_called_with(report)
+-        self.assertEquals(virtwho.send_after, initial + options.interval)
++        self.assertEquals(virtwho.send_after, initial + MinimumSendInterval)
+ 
+     @patch('time.time')
+     @patch('virtwho.log.getLogger')
+@@ -443,7 +445,7 @@ class TestSend(TestBase):
+         virtwho.send_current_report()
+         retry_after = 60
+         self.assertEquals(virtwho.retry_after, retry_after)
+-        self.assertEquals(virtwho.send_after, initial + options.interval)
++        self.assertEquals(virtwho.send_after, initial + MinimumSendInterval)
+         self.assertEquals(len(virtwho.queued_reports), 0)
+ 
+ 
+diff --git a/virt-who.spec b/virt-who.spec
+index 4fe21a1..a6dce7b 100644
+--- a/virt-who.spec
++++ b/virt-who.spec
+@@ -6,7 +6,7 @@
+ 
+ Name:           virt-who
+ Version:        0.18
+-Release:        3%{?dist}
++Release:        4%{?dist}
+ Summary:        Agent for reporting virtual guest IDs to subscription-manager
+ 
+ Group:          System Environment/Base
+@@ -127,6 +127,9 @@ fi
+ 
+ 
+ %changelog
++* Wed Nov 01 2017 Christopher Snyder <csnyder@redhat.com> 0.18-4
++- 1507786: Updates to the job polling frequency (csnyder@redhat.com)
++
+ * Tue Jan 31 2017 Christopher Snyder <csnyder@redhat.com> 0.18-3
+ - Update spec file for RHEL builds (csnyder@redhat.com)
+ - 1410000: Include org_id in hv base channel (pcreech@redhat.com)
+diff --git a/virtwho/__init__.py b/virtwho/__init__.py
+index 149bac9..a1fad03 100644
+--- a/virtwho/__init__.py
++++ b/virtwho/__init__.py
+@@ -2,3 +2,4 @@
+ # Default interval for sending list of UUIDs
+ DefaultInterval = 60  # One per minute
+ MinimumSendInterval = 60  # One minute
++MinimumJobPollInterval = 15
+diff --git a/virtwho/executor.py b/virtwho/executor.py
+index a4e3802..c47bf2e 100644
+--- a/virtwho/executor.py
++++ b/virtwho/executor.py
+@@ -4,7 +4,7 @@ from Queue import Empty
+ import errno
+ import socket
+ 
+-from virtwho import log, MinimumSendInterval
++from virtwho import log, MinimumSendInterval, MinimumJobPollInterval
+ 
+ from virtwho.config import ConfigManager
+ from virtwho.manager import (
+@@ -57,8 +57,14 @@ class Executor(object):
+         # Name of configs that wasn't reported in oneshot mode
+         self.oneshot_remaining = set()
+ 
+-        # Reports that are currently processed by server
+-        self.reports_in_progress = []
++        # Report that is currently being processed by server
++        self.report_in_progress = None
++
++        # True if this is the first time we are checking job status for a given job
++        self.is_first_job_check = True
++
++        # Next time to check the status of the most recently submitted job
++        self.next_job_status_check = 0
+ 
+         self.configManager = ConfigManager(self.logger, config_dir)
+ 
+@@ -71,21 +77,19 @@ class Executor(object):
+         ''' Check state of one report that is being processed on server. '''
+         manager = Manager.fromOptions(self.logger, self.options, report.config)
+         manager.check_report_state(report)
+-
+-    def check_reports_state(self):
+-        ''' Check status of the reports that are being processed on server. '''
+-        if not self.reports_in_progress:
+-            return
+-        updated = []
+-        for report in self.reports_in_progress:
+-            self.check_report_state(report)
+-            if report.state == AbstractVirtReport.STATE_CREATED:
+-                self.logger.warning("Can't check status of report that is not yet sent")
+-            elif report.state == AbstractVirtReport.STATE_PROCESSING:
+-                updated.append(report)
+-            else:
+-                self.report_done(report)
+-        self.reports_in_progress = updated
++        if report.state == AbstractVirtReport.STATE_CREATED:
++            self.logger.warning("Can't check status of report that is not yet sent")
++            self.next_job_status_check = time.time() + MinimumJobPollInterval
++        elif report.state != AbstractVirtReport.STATE_PROCESSING:
++            # Any other state we consider to be done
++            self.report_done(report)
++        return report.state
++
++    def _is_next_job_check_time(self):
++        # If there are no jobs to check, it's not time to check them
++        if not self.report_in_progress:
++            return False
++        return time.time() >= self.next_job_status_check
+ 
+     def send_current_report(self):
+         name, report = self.queued_reports.popitem(last=False)
+@@ -101,7 +105,8 @@ class Executor(object):
+ 
+                 self.logger.debug('Report for config "%s" sent', name)
+                 if report.state == AbstractVirtReport.STATE_PROCESSING:
+-                    self.reports_in_progress.append(report)
++                    self.report_in_progress = report
++                    self.next_job_status_check = time.time() + MinimumJobPollInterval
+                 else:
+                     self.report_done(report)
+             else:
+@@ -117,10 +122,20 @@ class Executor(object):
+ 
+     def report_done(self, report):
+         name = report.config.name
+-        self.send_after = time.time() + self.options.interval
++        if self.options.oneshot:
++            self.send_after = time.time() + self.retry_after
++        else:
++            self.send_after = time.time() + self.options.interval
+         if report.state == AbstractVirtReport.STATE_FINISHED:
+             self.last_reports_hash[name] = report.hash
+ 
++        if report.state in [AbstractVirtReport.STATE_FINISHED,
++                            AbstractVirtReport.STATE_FAILED,
++                            AbstractVirtReport.STATE_CANCELED]:
++            self.report_in_progress = None
++            self.next_job_status_check = 0
++            self.is_first_job_check = True
++
+         if self.options.oneshot:
+             try:
+                 self.oneshot_remaining.remove(name)
+@@ -208,29 +223,24 @@ class Executor(object):
+         # Clear last reports, we need to resend them when reloaded
+         self.last_reports_hash.clear()
+ 
+-        # List of reports that are being processed by server
+-        self.reports_in_progress = []
++        # report that is being processed by the server
++        self.report_in_progress = None
+ 
+         # Send the first report immediately
+         self.send_after = time.time()
+ 
++        # Time to check job status
++        self.next_job_status_check = 0
++
++        self.is_first_job_check = True
++
+         while not self.terminate_event.is_set():
+-            if self.reports_in_progress:
+-                # Check sent report status regularly
++            # Block for the amount of time closest to the next action we need to perform
++            # OR do not block at all if it is time to do one of them
++            timeout = max(1, min(self.next_job_status_check - time.time(),
++                                 self.send_after - time.time()))
++            if self.oneshot_remaining:
+                 timeout = 1
+-            elif time.time() > self.send_after:
+-                if self.queued_reports:
+-                    # Reports are queued and we can send them right now,
+-                    # don't wait in queue
+-                    timeout = 0
+-                else:
+-                    # No reports in progress or queued and we can send report
+-                    # immediately, we can wait for report as long as we want
+-                    timeout = 3600
+-            else:
+-                # We can't send report right now, wait till we can
+-                timeout = max(1, self.send_after - time.time())
+-
+             # Wait for incoming report from virt backend or for timeout
+             try:
+                 report = self.queue.get(block=True, timeout=timeout)
+@@ -251,18 +261,12 @@ class Executor(object):
+                             pass
+                         self.logger.warn('Unable to collect report for config "%s"', report.config.name)
+                 elif isinstance(report, AbstractVirtReport):
+-                    if self.last_reports_hash.get(report.config.name, None) == report.hash:
+-                        self.logger.info('Report for config "%s" hasn\'t changed, not sending', report.config.name)
+-                    else:
++                    if self.last_reports_hash.get(report.config.name, None) != report.hash:
++                        self.queued_reports[report.config.name] = report
+                         if report.config.name in self.oneshot_remaining:
+-                            # Send the report immediately
+                             self.oneshot_remaining.remove(report.config.name)
+-                            if not self.options.print_:
+-                                self.send_report(report.config.name, report)
+-                            else:
+-                                self.queued_reports[report.config.name] = report
+-                        else:
+-                            self.queued_reports[report.config.name] = report
++                    else:
++                        self.logger.info('Report for config "%s" hasn\'t changed, not sending', report.config.name)
+                 elif report in ['exit', 'reload']:
+                     # Reload and exit reports takes priority, do not process
+                     # any other reports
+@@ -280,14 +284,26 @@ class Executor(object):
+                 self.stop_virts()
+                 raise ReloadRequest()
+ 
+-            self.check_reports_state()
++            if self._is_next_job_check_time():
++                try:
++                    report_state = self.check_report_state(self.report_in_progress)
++                except ManagerThrottleError as e:
++                    self.logger.debug('HTTP 429 received during job polling')
++                    if e.retry_after != 0:
++                        self.next_job_status_check = time.time() + e.retry_after
++                else:
++                    if report_state not in [AbstractVirtReport.STATE_CANCELED,
++                                            AbstractVirtReport.STATE_FAILED,
++                                            AbstractVirtReport.STATE_FINISHED]:
++                        self.is_first_job_check = False
++                        self.next_job_status_check = time.time() + (MinimumJobPollInterval * 2)
+ 
+-            if not self.reports_in_progress and self.queued_reports and time.time() > self.send_after:
++            if not self.report_in_progress and self.queued_reports and time.time() > self.send_after:
+                 # No report is processed, send next one
+                 if not self.options.print_:
+                     self.send_current_report()
+ 
+-            if self.options.oneshot and not self.oneshot_remaining and not self.reports_in_progress:
++            if self.options.oneshot and not self.oneshot_remaining and not self.report_in_progress and (not self.queued_reports or self.options.print_):
+                 break
+ 
+         self.queue = None
+diff --git a/virtwho/manager/subscriptionmanager/subscriptionmanager.py b/virtwho/manager/subscriptionmanager/subscriptionmanager.py
+index 40d54ab..de74585 100644
+--- a/virtwho/manager/subscriptionmanager/subscriptionmanager.py
++++ b/virtwho/manager/subscriptionmanager/subscriptionmanager.py
+@@ -205,7 +205,7 @@ class SubscriptionManager(Manager):
+         except BadStatusLine:
+             raise ManagerError("Communication with subscription manager interrupted")
+         except rhsm_connection.RateLimitExceededException as e:
+-            retry_after = int(getattr(e, 'headers', {}).get('Retry-After', '60'))
++            retry_after = int(getattr(e, 'headers', {}).get('retry-after', '60'))
+             raise ManagerThrottleError(retry_after)
+         except rhsm_connection.GoneException:
+             raise ManagerError("Communication with subscription manager failed: consumer no longer exists")
+@@ -228,6 +228,9 @@ class SubscriptionManager(Manager):
+             result = self.connection.getJob(job_id)
+         except BadStatusLine:
+             raise ManagerError("Communication with subscription manager interrupted")
++        except rhsm_connection.RateLimitExceededException as e:
++            retry_after = int(getattr(e, 'headers', {}).get('retry-after', '0'))
++            raise ManagerThrottleError(retry_after)
+         except rhsm_connection.ConnectionException as e:
+             if hasattr(e, 'code'):
+                 raise ManagerError("Communication with subscription manager failed with code %d: %s" % (e.code, str(e)))
