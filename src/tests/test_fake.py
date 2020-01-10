@@ -19,13 +19,15 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
 import os
-from base import TestBase
-from virt import Virt, Hypervisor, VirtError
-from virt.fakevirt import FakeVirt
-from config import ConfigManager
 import logging
 from tempfile import mkdtemp
 import shutil
+
+from base import TestBase
+
+from virtwho.config import ConfigManager
+from virtwho.virt import Virt, Hypervisor, VirtError
+from virtwho.virt.fakevirt import FakeVirt
 
 
 HYPERVISOR_JSON = """
@@ -39,8 +41,7 @@ HYPERVISOR_JSON = """
                     "state": 1,
                     "attributes": {
                         "active": 1,
-                        "virtWhoType": "hyperv",
-                        "hypervisorType": "hyperv"
+                        "virtWhoType": "hyperv"
                     }
                 }
             ]
@@ -58,8 +59,7 @@ NON_HYPERVISOR_JSON = """
                     "state": 1,
                     "attributes": {
                         "active": 1,
-                        "virtWhoType": "libvirt",
-                        "hypervisorType": "QEMU"
+                        "virtWhoType": "libvirt"
                     }
                 }
             ]

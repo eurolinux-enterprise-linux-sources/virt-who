@@ -1,3 +1,4 @@
+# coding=utf-8
 """
 Test reading and writing configuration files as well as configuration objects.
 
@@ -18,17 +19,19 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
-
 import os
+import sys
 import shutil
-from config import ConfigManager, InvalidOption, GeneralConfig, NotSetSentinel, GlobalConfig
 from tempfile import mkdtemp
-from base import TestBase, unittest
 from binascii import hexlify, unhexlify
 from mock import patch
 import logging
 import random
-import sys
+
+from base import TestBase, unittest
+
+from virtwho.config import ConfigManager, InvalidOption, GeneralConfig, NotSetSentinel, GlobalConfig, parse_list
+from virtwho.password import Password, InvalidKeyFile
 
 
 class TestReadingConfigs(TestBase):
@@ -121,9 +124,8 @@ env=staging
         manager = ConfigManager(self.logger, self.config_dir)
         self.assertEqual(len(manager.configs), 0)
 
-    @patch('password.Password._read_key_iv')
+    @patch('virtwho.password.Password._read_key_iv')
     def testCryptedPassword(self, password):
-        from password import Password
         password.return_value = (hexlify(Password._generate_key()), hexlify(Password._generate_key()))
         passwd = "TestSecretPassword!"
         crypted = hexlify(Password.encrypt(passwd))
@@ -143,9 +145,8 @@ env=staging
         self.assertEqual(len(manager.configs), 1)
         self.assertEqual(manager.configs[0].password, passwd)
 
-    @patch('password.Password._read_key_iv')
+    @patch('virtwho.password.Password._read_key_iv')
     def testCryptedRHSMPassword(self, password):
-        from password import Password
         password.return_value = (hexlify(Password._generate_key()), hexlify(Password._generate_key()))
         passwd = "TestSecretPassword!"
         crypted = hexlify(Password.encrypt(passwd))
@@ -167,9 +168,8 @@ env=staging
         self.assertEqual(len(manager.configs), 1)
         self.assertEqual(manager.configs[0].rhsm_password, passwd)
 
-    @patch('password.Password._read_key_iv')
+    @patch('virtwho.password.Password._read_key_iv')
     def testCryptedRHSMProxyPassword(self, password):
-        from password import Password
         password.return_value = (hexlify(Password._generate_key()), hexlify(Password._generate_key()))
         passwd = "TestSecretPassword!"
         crypted = hexlify(Password.encrypt(passwd))
@@ -191,9 +191,8 @@ env=staging
         self.assertEqual(manager.configs[0].rhsm_proxy_password, passwd)
 
     def testCryptedPasswordWithoutKey(self):
-        from password import Password, InvalidKeyFile
         Password.KEYFILE = "/some/nonexistant/file"
-        passwd = "TestSecretPassword!"
+        # passwd = "TestSecretPassword!"
         with self.assertRaises(InvalidKeyFile):
             Password.decrypt(unhexlify("06a9214036b8a15b512e03d534120006"))
 
@@ -419,6 +418,7 @@ server=1.2.3.4
 username=admin
 password=password
 owner=root
+rhsm_hostname=abc
 """)
         self.assertRaises(InvalidOption, ConfigManager, self.logger, self.config_dir)
 
@@ -431,8 +431,101 @@ server=1.2.3.4
 username=admin
 password=password
 env=env
+rhsm_hostname=abc
 """)
         self.assertRaises(InvalidOption, ConfigManager, self.logger, self.config_dir)
+
+    def testInvisibleConfigFile(self):
+        with open(os.path.join(self.config_dir, ".test1.conf"), "w") as f:
+            f.write("""
+[test1]
+type=libvirt
+server=1.2.3.4
+username=admin
+password=password
+owner=root
+env=staging
+""")
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEqual(len(manager.configs), 0, "Hidden config file shouldn't be read")
+
+    def testFilterHostOld(self):
+        with open(os.path.join(self.config_dir, "test1.conf"), "w") as f:
+            f.write("""
+[test1]
+type=esx
+server=1.2.3.4
+username=admin
+password=password
+owner=root
+env=staging
+filter_host_uuids=12345
+""")
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEqual(len(manager.configs), 1)
+        self.assertEqual(manager.configs[0].filter_hosts, ['12345'])
+
+    def testFilterHostNew(self):
+        with open(os.path.join(self.config_dir, "test1.conf"), "w") as f:
+            f.write("""
+[test1]
+type=esx
+server=1.2.3.4
+username=admin
+password=password
+owner=root
+env=staging
+filter_hosts=12345
+""")
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEqual(len(manager.configs), 1)
+        self.assertEqual(manager.configs[0].filter_hosts, ['12345'])
+
+    def testQuotesInConfig(self):
+        with open(os.path.join(self.config_dir, "test1.conf"), "w") as f:
+            f.write("""
+[test1]
+type=esx
+server="1.2.3.4"
+username='admin'
+password=p"asswor'd
+owner=" root "
+env='"staging"'
+""")
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEqual(len(manager.configs), 1)
+        config = manager.configs[0]
+        self.assertEqual(config.name, "test1")
+        self.assertEqual(config.type, "esx")
+        self.assertEqual(config.server, "1.2.3.4")
+        self.assertEqual(config.username, "admin")
+        self.assertEqual(config.password, "p\"asswor'd")
+        self.assertEqual(config.owner, " root ")
+        self.assertEqual(config.env, '"staging"')
+
+    def testUnicode(self):
+        with open(os.path.join(self.config_dir, "test1.conf"), "w") as f:
+            f.write("""
+[test1]
+type=esx
+server=žluťoučký servřík
+username=username
+password=password
+owner=здравствуйте
+env=العَرَبِيَّة
+""")
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEqual(len(manager.configs), 1)
+        config = manager.configs[0]
+        self.assertEqual(config.name, "test1")
+        self.assertEqual(config.type, "esx")
+        self.assertEqual(config.server, "žluťoučký servřík")
+        # Username and password can't be unicode, they has to be latin1 for HTTP Basic auth
+        self.assertEqual(config.username, "username")
+        self.assertEqual(config.password, "password")
+        self.assertEqual(config.owner, "здравствуйте")
+        self.assertEqual(config.env, 'العَرَبِيَّة')
+
 
 class TestGeneralConfig(TestBase):
     """
@@ -444,11 +537,11 @@ class TestGeneralConfig(TestBase):
     def test___init__(self):
         defaults = {
             'test': '1',
-            'override_me':'wrong_value'
+            'override_me': 'wrong_value'
         }
         arg_dict = {
-            'arg_dict':'some_value',
-            'override_me':'expected_value'
+            'arg_dict': 'some_value',
+            'override_me': 'expected_value'
         }
         general_config = GeneralConfig(defaults=defaults, **arg_dict)
 
@@ -527,3 +620,67 @@ class TestGlobalConfig(TestBase):
         for false_string in test_false_strings:
             setattr(self.config, bool_option, false_string)
             self.assertEqual(getattr(self.config, bool_option), False)
+
+
+class TestParseList(TestBase):
+    def test_unquoted(self):
+        self.assertEqual(
+            parse_list('abc,def,ghi'),
+            ['abc', 'def', 'ghi']
+        )
+        self.assertEqual(
+            parse_list(' abc, def ,ghi, jkl '),
+            ['abc', 'def', 'ghi', 'jkl']
+        )
+        self.assertEqual(
+            parse_list(' abc, def ,ghi, jkl,'),
+            ['abc', 'def', 'ghi', 'jkl']
+        )
+
+    def test_doublequoted(self):
+        self.assertEqual(
+            parse_list('"abc","def","ghi"'),
+            ['abc', 'def', 'ghi']
+        )
+        self.assertEqual(
+            parse_list('"abc", "def" ,"ghi" , "jkl"'),
+            ['abc', 'def', 'ghi', 'jkl']
+        )
+        self.assertEqual(
+            parse_list('"abc ", " def" ,"g h i" , " j,l "'),
+            ['abc ', ' def', 'g h i', ' j,l ']
+        )
+        self.assertRaises(ValueError, parse_list, 'abc"def')
+        self.assertEqual(
+            parse_list('"abc\\"", "\\"def"'),
+            ['abc"', '"def']
+        )
+
+    def test_singlequoted(self):
+        self.assertEqual(
+            parse_list("'abc','def','ghi'"),
+            ['abc', 'def', 'ghi']
+        )
+        self.assertEqual(
+            parse_list("'abc', 'def' ,'ghi' , 'jkl'"),
+            ['abc', 'def', 'ghi', 'jkl']
+        )
+        self.assertEqual(
+            parse_list("'abc ', ' def' ,'g h i' , ' j,l '"),
+            ['abc ', ' def', 'g h i', ' j,l ']
+        )
+        self.assertRaises(ValueError, parse_list, "abc'def")
+
+    def test_special(self):
+        self.assertEqual(
+            parse_list("'\babc','!def',',\\\\ghi'"),
+            ['\babc', '!def', ',\\ghi']
+        )
+        self.assertEqual(
+            parse_list("'a\nc', '\tdef' ,'\"ghi\"' , \"'jkl'\""),
+            ['a\nc', '\tdef', '"ghi"', "'jkl'"]
+        )
+        self.assertEqual(
+            parse_list("'abc\ ', '\\\\ def' ,'g h i' , ' jkl '"),
+            ['abc ', '\\ def', 'g h i', ' jkl ']
+        )

@@ -1,73 +1,47 @@
+%define use_systemd (0%{?fedora} && 0%{?fedora} >= 18) || (0%{?rhel} && 0%{?rhel} >= 7)
+%if !%{use_systemd}
+%global __python2 %{__python}
+%global python2_sitelib %{python_sitelib}
+%endif
+
 Name:           virt-who
-Version:        0.16
-Release:        8%{?dist}
+Version:        0.18
+Release:        3%{?dist}
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
 
 Group:          System Environment/Base
 License:        GPLv2+
 URL:            https://fedorahosted.org/virt-who/
 Source0:        https://fedorahosted.org/releases/v/i/virt-who/%{name}-%{version}.tar.gz
+Patch0: virt-who-0.18-1-to-virt-who-0.18-2.patch
+Patch1: virt-who-0.18-2-to-virt-who-0.18-3.patch
 BuildRoot:      %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
 BuildArch:      noarch
 BuildRequires:  python2-devel
+BuildRequires:  python-setuptools
+Requires:       python-setuptools
 Requires:       libvirt-python
-# python-rhsm 1.10.10 has support for sending additional information together with guest uuids
+# python-rhsm 1.10.10 has required call for guestId support
 Requires:       python-rhsm >= 1.10.10
 # python-suds is required for vSphere support
 Requires:       python-suds
 # m2crypto is required for Hyper-V support
 Requires:       m2crypto
 Requires:       python-requests
+
+%if %{use_systemd}
+Requires: systemd-python
+BuildRequires: systemd
+Requires(post): systemd
+Requires(preun): systemd
+Requires(postun): systemd
+%else
 Requires(post): chkconfig
 Requires(preun): chkconfig
 # This is for /sbin/service
 Requires(preun): initscripts
-
-
-# Fix typo in template.conf
-Patch0:         virt-who-0.16-fix-typo-in-template-conf.patch
-# HyperV: support ntlm sealing and signing
-Patch1:         virt-who-0.16-hyperv-support-ntlm-sealing.patch
-# Use whole report as argument to hypervisorCheckIn and sendVirtGuests
-Patch2:         virt-who-0.16-use-whole-report-for-hypervisorCheckIn.patch
-# Refactor main loop and job scheduling
-Patch3:         virt-who-0.16-refactor-main-loop-and-jobs.patch
-# Improve logging
-Patch4:         virt-who-0.16-improve-logging.patch
-# Better handling of 429 error code
-Patch5:         virt-who-0.16-better-handling-of-429.patch
-# Background and oneshot modes are no longer exclusive
-Patch6:         virt-who-0.16-background-and-oneshot-not-exclusive.patch
-# Handle unregister gracefully
-Patch7:         virt-who-0.14-handle-unregister-gracefully.patch
-# Documentation and manual page fixes
-Patch8:         virt-who-0.14-docu-and-manpage-fixes.patch
-# Don't terminate virt-who if the system is not registered
-Patch9:         virt-who-0.16-dont-terminate-when-unregistered.patch
-# Reword note about hwuuid in man page
-Patch10:        virt-who-0.16-reword-hwuuid-note-in-manpage.patch
-# Change pidfile permissions to 600
-Patch11:        virt-who-0.16-pidfile-permission-600.patch
-# Do not change minimal reporting interval by interval option
-Patch12:        virt-who-0.16-no-minimal-interval-change.patch
-# Fix default interval in the man page
-Patch13:        virt-who-0.16-fix-default-interval-man-page.patch
-# No rate limit for first round of updates
-Patch14:        virt-who-0.16-no-rate-limit-for-first-updates.patch
-# Honor interval even with event monitoring
-Patch15:        virt-who-0.16-honor-interval-with-event-monitoring.patch
-# Fix satellite5 env var usage
-Patch16:        virt-who-0.16-satellite5-fix-env-var-usage.patch
-# Don't print anything when nothing found in the print mode
-Patch17:        virt-who-0.16-dont-print-when-nothing-found.patch
-# Handle no hostname returned from esx
-Patch18:        virt-who-0.16-handle-no-hostname-returned-from-esx.patch
-# ESX: fix logging out from hypervisor on exit
-Patch19:        virt-who-0.16-esx-fix-logging-out-from-hypervisor.patch
-# VDSM: do not enforce sslv3
-Patch20:        virt-who-0.16-dont-enforce-sslv3.patch
-
+%endif
 
 %description
 Agent that collects information about virtual guests present in the system and
@@ -77,37 +51,27 @@ report them to the subscription manager.
 %setup -q
 %patch0 -p1
 %patch1 -p1
-%patch2 -p1
-%patch3 -p1
-%patch4 -p1
-%patch5 -p1
-%patch6 -p1
-%patch7 -p1
-%patch8 -p1
-%patch9 -p1
-%patch10 -p1
-%patch11 -p1
-%patch12 -p1
-%patch13 -p1
-%patch14 -p1
-%patch15 -p1
-%patch16 -p1
-%patch17 -p1
-%patch18 -p1
-%patch19 -p1
-%patch20 -p1
 
 
 %build
-
+%{__python2} setup.py build
 
 %install
 rm -rf $RPM_BUILD_ROOT
+%{__python2} setup.py install --root %{buildroot}
+%{__python2} setup.py install_config --root %{buildroot}
+%{__python2} setup.py install_man_pages --root %{buildroot}
+%if %{use_systemd}
+%{__python2} setup.py install_systemd --root %{buildroot}
+%else
+%{__python2} setup.py install_upstart --root %{buildroot}
+%endif
 
-make DESTDIR=$RPM_BUILD_ROOT install
-mkdir -p %{buildroot}/%{_sharedstatedir}/%{name}
-mkdir -p %{buildroot}/%{_sysconfdir}/virt-who.d
+mkdir -p %{buildroot}/%{_sharedstatedir}/%{name}/
 touch %{buildroot}/%{_sharedstatedir}/%{name}/key
+
+mkdir -p %{buildroot}/%{_datadir}/zsh/site-functions
+install -m 644 virt-who-zsh %{buildroot}/%{_datadir}/zsh/site-functions/_virt-who
 
 # Don't run test suite in check section, because it need the system to be
 # registered to subscription-manager server
@@ -116,263 +80,216 @@ touch %{buildroot}/%{_sharedstatedir}/%{name}/key
 rm -rf $RPM_BUILD_ROOT
 
 %post
+%if %{use_systemd}
+%systemd_post virt-who.service
+%else
 # This adds the proper /etc/rc*.d links for the script
 /sbin/chkconfig --add virt-who
+%endif
+
 
 %preun
+%if %{use_systemd}
+%systemd_preun virt-who.service
+%else
 if [ $1 -eq 0 ] ; then
     /sbin/service virt-who stop >/dev/null 2>&1
     /sbin/chkconfig --del virt-who
 fi
+%endif
 
 %postun
+%if %{use_systemd}
+%systemd_postun_with_restart virt-who.service
+%else
 if [ "$1" -ge "1" ] ; then
     /sbin/service virt-who condrestart >/dev/null 2>&1 || :
 fi
+%endif
 
 
 %files
-%doc README.md README.hyperv LICENSE
+%doc README.md LICENSE README.hyperv
 %{_bindir}/virt-who
 %{_bindir}/virt-who-password
-%{_datadir}/virt-who/
+%{python2_sitelib}/*
+%if %{use_systemd}
+%{_unitdir}/virt-who.service
+%else
 %{_sysconfdir}/rc.d/init.d/virt-who
-%{_sysconfdir}/virt-who.conf
-%attr(700, root, root) %dir %{_sysconfdir}/virt-who.d
-%{_sysconfdir}/virt-who.d/template.conf
+%endif
 %attr(600, root, root) %config(noreplace) %{_sysconfdir}/sysconfig/virt-who
+%attr(700, root, root) %dir %{_sysconfdir}/virt-who.d
 %{_mandir}/man8/virt-who.8.gz
 %{_mandir}/man8/virt-who-password.8.gz
 %{_mandir}/man5/virt-who-config.5.gz
 %attr(700, root, root) %{_sharedstatedir}/%{name}
 %ghost %{_sharedstatedir}/%{name}/key
+%{_datadir}/zsh/site-functions/_virt-who
+%{_sysconfdir}/virt-who.d/template.conf
+%{_sysconfdir}/virt-who.conf
 
 
 %changelog
-* Thu Mar 31 2016 Radek Novacek <rnovacek@redhat.com> 0.16-8
-- ESX: fix logging out from hypervisor on exit
-- VDSM: do not enforce sslv3
-- Resolves: rhbz#1249928
+* Tue Jan 31 2017 Christopher Snyder <csnyder@redhat.com> 0.18-3
+- Update spec file for RHEL builds (csnyder@redhat.com)
+- 1410000: Include org_id in hv base channel (pcreech@redhat.com)
 
-* Thu Mar 10 2016 Radek Novacek <rnovacek@redhat.com> 0.16-7
-- Fix satellite5 env var usage
-- Don't print anything when nothing found in the print mode
-- Handle no hostname returned from esx
-- Resolves: rhbz#1284037
+* Tue Jan 03 2017 Christopher Snyder <csnyder@redhat.com> 0.18-2
+- 1409811: Obey the interval setting (csnyder@redhat.com)
 
-* Thu Feb 25 2016 Radek Novacek <rnovacek@redhat.com> 0.16-6
-- No rate limit for first round of updates
-- Honor interval even with event monitoring
-- Resolves: rhbz#1230041, rhbz#1295644
+* Tue Oct 11 2016 Radek Novacek <rnovacek@redhat.com> 0.18-1
+- Version 0.18
 
-* Tue Feb 23 2016 Radek Novacek <rnovacek@redhat.com> 0.16-5
-- Change pidfile permissions to 600
-- Do not change minimal reporting interval by interval option
-- Fix default interval in the man page
-- Resolves: rhbz#1310977
-
-* Thu Feb 11 2016 Radek Novacek <rnovacek@redhat.com> 0.16-4
-- Don't terminate virt-who if the system is not registered
-- Reword note about hwuuid in man page
-- Resolves: rhbz#1293821, rhbz#1233074
-
-* Tue Feb 02 2016 Radek Novacek <rnovacek@redhat.com> 0.16-3
-- Requires: python-requests
-- Resolves: rhbz#1294746
-
-* Tue Jan 26 2016 Radek Novacek <rnovacek@redhat.com> 0.16-2
-- Support NTLM sealing
-- Fix interval issues
-- Improve exception handling
-- Make background and oneshot modes not exclusive
-- Handle unregister gracefully
-- Documentation and manual page fixes
-- Resolves: rhbz#1294746
+* Tue May 17 2016 Radek Novacek <rnovacek@redhat.com> 0.17-1
+- Version 0.17
 
 * Thu Dec 17 2015 Radek Novacek <rnovacek@redhat.com> 0.16-1
-- Rebase to virt-who-0.16
-- Resolves: rhbz#1258765
+- Version 0.16
 
-* Thu Jun 04 2015 Radek Novacek <rnovacek@redhat.com> 0.12-10
-- Esx: handle vcenter restart
-- subscriptionmanager: suppress BadStatusLine exception
-- Resolves: rhbz#1208345
+* Tue Aug 04 2015 Devan Goodwin <dgoodwin@rm-rf.ca> 0.15-1
+- Update spec for renamed README.md. (dgoodwin@redhat.com)
+- Moves fakevirt._decode() to util.decode() (csnyder@redhat.com)
+- Adds the report.config.name to log message when refusing to send a report due
+  to lack of change (csnyder@redhat.com)
+- VirtWho: Clears list of reports on reload (csnyder@redhat.com)
+- Revises change detection tests to account for changes in master
+  (csnyder@redhat.com)
+- Libvirtd: Sends a report on start up, and on events (csnyder@redhat.com)
+- Removes trailing line at the end of the file (csnyder@redhat.com)
+- Test_Esx: Test Oneshot to ensure it queues a report (csnyder@redhat.com)
+- Esx: only queue data if the version has changed (csnyder@redhat.com)
+- Test_VirtWho:Patches manager.Manager.fromOptions, removes unnecessary mocks
+  (csnyder@redhat.com)
+- Removes unhelpful debug log message (csnyder@redhat.com)
+- Fix spacing, remove unused imports (csnyder@redhat.com)
+- Test_VirtWho: Adds test to show same report will not be sent twice
+  (csnyder@redhat.com)
+- VirtWho: Adds basic change detection using report hashs (csnyder@redhat.com)
+- Adds hash property to config (csnyder@redhat.com)
+- Adds hash property to DomainListReport and HypervisorGuestAssociationReport
+  (csnyder@redhat.com)
+- Hypervisor: Adds getHash class method (csnyder@redhat.com)
+- Limits interval settings (wpoteat@redhat.com)
+- Retry sending data to subscription manager multiple times before dropping
+  (rnovacek@redhat.com)
+- SubscriptionManager: nicely order keys in debug report (rnovacek@redhat.com)
+- Fix serialization of guest list in print mode (rnovacek@redhat.com)
+- Do not exit oneshot mode if any job exists (rnovacek@redhat.com)
+- SubscriptionManager: check if report result has failedUpdate item
+  (rnovacek@redhat.com)
+- SubscriptionManager: minor logging fixes (rnovacek@redhat.com)
+- SubscriptionManager: add env var to disable asynchronous reporting
+  (rnovacek@redhat.com)
+- Check jobs status in increasing interval (rnovacek@redhat.com)
+- Esx: report host even if it doesn't have any guests (rnovacek@redhat.com)
+- Hypervisors reported by hyperv now include hostname. (csnyder@redhat.com)
+- Removes completed jobs. (csnyder@redhat.com)
+- Fix output format in print mode (rnovacek@redhat.com)
+- Fix using empty list as default parameter value (rnovacek@redhat.com)
+- satellite: support new hypervisor format (rnovacek@redhat.com)
+- Fix tests failures (rnovacek@redhat.com)
+- Removes timeouts for jobs. All jobs in the list are now executed just before
+  a new report is sent. (csnyder@redhat.com)
+- The virtwho loop now blocks on the report queue with a one second timeout
+  (csnyder@redhat.com)
+- Removes unnecessary imports and queue (csnyder@redhat.com)
+- Rewrite readme to markdown syntax (rnovacek@redhat.com)
+- CI: install unittest2 from pypi (rnovacek@redhat.com)
+- CI: add -y option to add-apt-repository (rnovacek@redhat.com)
+- CI: another attempt on cloud archive for libvirt (rnovacek@redhat.com)
+- CI: try to install newer version of libvirt from cloud archive
+  (rnovacek@redhat.com)
+- CI: add libvirt-dev dependency (rnovacek@redhat.com)
+- CI: install libvirt-python via pip (rnovacek@redhat.com)
+- CI: another attempt without site-packages (rnovacek@redhat.com)
+- CI: install python-rhsm dependencies (rnovacek@redhat.com)
+- Adds support for facts in Hypervisor profile. (csnyder@redhat.com)
+- Adds count of unchanged mappings to the info logged for the result of an
+  async job (csnyder@redhat.com)
+- Adds tests for jobs in virtwho, removes unnecessary tests for managerprocess.
+  (csnyder@redhat.com)
+- Changes to ensure backwards compatibility with python-rhsm
+  (csnyder@redhat.com)
+- Fixes RhevM.getHostGuestMapping() as suggested by rnovacek
+  (csnyder@redhat.com)
+- Adds layer to hypervisorId. Removes completed TODO (csnyder@redhat.com)
+- Moves all functionality of managerprocess into virtwho. (csnyder@redhat.com)
+- CI: use python with system side packages enabled (rnovacek@redhat.com)
+- CI: install m2crypto using apt instead of pip (rnovacek@redhat.com)
+- CI: install python-libvirt using apt instead of pip (rnovacek@redhat.com)
+- Add requirements.txt and .travis.yml for the CI (rnovacek@redhat.com)
+- Adds tests to verify the hostGuestAssociation is generated correctly.
+  (csnyder@redhat.com)
+- Updates libvirtd and tests to add host name to hypervisor profile
+  (csnyder@redhat.com)
+- Updates managerprocess with better logging and changes for the new tests.~~
+  (csnyder@redhat.com)
+- Updates to use the new hypervisor class (csnyder@redhat.com)
+- print mode: format debug message about found hypervisors
+  (rnovacek@redhat.com)
+- Removing uncesasary comments (csnyder@redhat.com)
+- Removes unused dictionary of jobs and associated methods.
+  (csnyder@redhat.com)
+- Fixes tests data to include "status" key. (csnyder@redhat.com)
+- Updates tests to make use of new Hypervisor class. (csnyder@redhat.com)
+- Host name is now included in the hypervisor profile using the new Hypervisor
+  class (csnyder@redhat.com)
+- Adds new Hypervisor class. (csnyder@redhat.com)
+- Adds new test for the updates to subscriptionmanager.py (csnyder@redhat.com)
+- Updates fakevirt to make use of virt.Guest classes (csnyder@redhat.com)
+- Changes to ensure proper execution post-merge (csnyder@redhat.com)
+- Removing more unnecessary prints (csnyder@redhat.com)
+- Fixes oneshot mode for work with new managerprocess (csnyder@redhat.com)
+- Cleaning up unneeded prints and adding more useful debug log messages
+  (csnyder@redhat.com)
+- Adds async job status polling for use with the new report API
+  (csnyder@redhat.com)
+- This (along with python-rhsm/csnyder/new_report_api ee38f15, allows
+  communication with new report api (csnyder@redhat.com)
 
-* Tue May 26 2015 Radek Novacek <rnovacek@redhat.com> 0.12-9
-- Fake: fix loading data from file as utf-8
-- Clear the queue before putting exit/reload there
-- rhevm: don't throw an exception when host doesn't have hardware uuid
-- log: don't rotate log file, it already has logrotate
-- libvirtd: properly terminate libvirt connection on exit
-- Resolves: rbhz#1223647
+* Tue Jun 23 2015 Radek Novacek <rnovacek@redhat.com> 0.14-1
+- Version 0.14
 
-* Thu May 14 2015 Radek Novacek <rnovacek@redhat.com> 0.12-8
-- Fix virt backend termination
-- esx: report host/guest assoc even if empty
-- Limit queue size to number of virt backends
-- rhevm: don't fail when hwuuid is not present
-- Show error when encrypted password is corrupted
-- Resolves: rhbz#1215007
-
-* Tue May 05 2015 Radek Novacek <rnovacek@redhat.com> 0.12-7
-- Fix oneshot mode for multiple hypervisors
-- Fake: load the data from file as utf-8
-- Add a note that changing hypervisor_id will result in duplicated entries
-- Terminate background processes when main process exits
-- Log the result in print mode
-- Resolves: rhbz#1215007
-
-* Thu Apr 23 2015 Radek Novacek <rnovacek@redhat.com> 0.12-6
-- Stop backends when system is not registered
-- Show info message that report was successful
-- Handle adding new esx host
-- Fail before forking when password key does not exist
-- Filter out all host when filter_host_uuids is empty
-- Resolves: rhbz#1212334
-
-* Thu Apr 09 2015 Radek Novacek <rnovacek@redhat.com> 0.12-5
-- Properly handle reload requests
-- Don't check pidfile when running --help
-- Resolves: rhbz#1208391, rhbz#1210209
-
-* Tue Apr 07 2015 Radek Novacek <rnovacek@redhat.com> 0.12-4
-- ESX: support esx update sets that are splitted to several parts
-- Resolves: rhbz#1155679
-
-* Thu Apr 02 2015 Radek Novacek <rnovacek@redhat.com> 0.12-3
-- ESX: Relogin after connection failure
-- Don't fail when encryption key doesn't exist
-- Fix reloading and termination of processes
-- Resolves: rhbz#1208345, rhbz#1208029, rbhz#1208020, rhbz#1207971, rhbz#1208391
-
-* Tue Mar 24 2015 Radek Novacek <rnovacek@redhat.com> 0.12-2
-- Fix proxy support in ESX
-- Fix timeout error in ESX
-- Update options for Satellite naming
-- Allow to identify hypervisors by other properties than UUID
-- Related: rhbz#1195585
-- Resolves: rbhz#1197970
+* Tue Mar 17 2015 Radek Novacek <rnovacek@redhat.com> 0.13-1
+- new package built with tito
 
 * Fri Feb 27 2015 Radek Novacek <rnovacek@redhat.com> 0.12-1
-- Rebase to virt-who-0.12
-- Resolves: rhbz#1195585
+- Version 0.12
 
-* Wed Sep 10 2014 Radek Novacek <rnovacek@redhat.com> 0.10-8
-- Fix domain sorting error in vdsm mode
-- Resolves: rhbz#1139497
+* Mon Sep 08 2014 Radek Novacek <rnovacek@redhat.com> 0.11-1
+- Version 0.11
 
-* Fri Aug 29 2014 Radek Novacek <rnovacek@redhat.com> 0.10-7
-- vdsm and rhevm: fix constructor parameters
-- Resolves: rhbz#1135341
+* Tue May 20 2014 Radek Novacek <rnovacek@redhat.com> 0.10-1
+- Add directory with configuration files
+- Version 0.10
 
-* Fri Aug 08 2014 Radek Novacek <rnovacek@redhat.com> 0.10-6
-- esx: disable error when esx host doesn't have guests
-- hyperv: don't use deprecated md5 module
-- Resolves: rhbz#1126295, rhbz#1126302
+* Thu Mar 13 2014 Radek Novacek <rnovacek@redhat.com> 0.9-1
+- Remove libvirt dependency
+- Add dependency on m2crypto
+- Version 0.9
 
-* Fri Aug 01 2014 Radek Novacek <rnovacek@redhat.com> 0.10-5
-- libvirt: properly handle libvirt shutdown when doing background monitoring
-- Resolves: rhbz#1125810
+* Fri Sep 14 2012 Radek Novacek <rnovacek@redhat.com> 0.8-1
+- Version 0.8
 
-* Tue Jul 29 2014 Radek Novacek <rnovacek@redhat.com> 0.10-4
-- Fix wrong usage of hypervisorCheckIn function
-- Fix wrong logger usage when processing update errors
-- Resolves: rhbz#1123723
+* Mon Jul 09 2012 Radek Novacek <rnovacek@redhat.com> 0.7-1
+- Version 0.7
 
-* Wed Jul 02 2014 Radek Novacek <rnovacek@redhat.com> 0.10-3
-- libvirtd: use event loop instead of reconnecting all the time
-- Resolves: rhbz#1113938
+* Mon Feb 13 2012 Radek Novacek <rnovacek@redhat.com> 0.6-1
+- Version 0.6
 
-* Wed Jun 18 2014 Radek Novacek <rnovacek@redhat.com> 0.10-2
-- Add upstream fixes of 0.10 release
-- Related: rhbz#1002640
+* Fri Dec 09 2011 Radek Novacek <rnovacek@redhat.com> 0.5-1
+- VSphere support
+- Req: python-suds
 
-* Tue Jun 03 2014 Radek Novacek <rnovacek@redhat.com> 0.10-1
-- Rebase to virt-who-0.10
-- Resolves: rhbz#1002640
+* Wed Nov 30 2011 Radek Novacek <rnovacek@redhat.com> 0.4-1
+- Version 0.4
 
-* Thu Aug 29 2013 Radek Novacek <rnovacek@redhat.com> 0.8-9
-- Set SAM mode as default
-- Fix esx traversal patch
-- Resolves: rhbz#1002058, rhbz#996269
-
-* Thu Aug 22 2013 Radek Novacek <rnovacek@redhat.com> 0.8-8
-- Add satellite support
-- Handle more than 100 objects in esx traversal
-- Resolves: rhbz#1002058, rhbz#996269
-
-* Wed Aug 07 2013 Radek Novacek <rnovacek@redhat.com> 0.8-7
-- Use instanceUuid when uuid of virtual machine is empty
-- Resolves: rhbz#923757
-
-* Fri Jul 26 2013 Radek Novacek <rnovacek@redhat.com> 0.8-6
-- Increase compatibility with ESXi
-- Resolves: rhbz#923757
-
-* Thu Oct 25 2012 Radek Novacek <rnovacek@redhat.com> 0.8-5
-- Fix adding https:// to ESX url
-- Resolves: rhbz#869960
-
-* Wed Oct 24 2012 Radek Novacek <rnovacek@redhat.com> 0.8-4
-- Help and manpage improvements
-- Resolves: rhbz#868149
-
-* Wed Oct 17 2012 Radek Novacek <rnovacek@redhat.com> 0.8-3
-- Fix bugs in Hyper-V support (patch rebased)
-- Create PID file ASAP to prevent service stop fails
-- Resolves: rhbz#866890
-
-* Thu Oct 11 2012 Radek Novacek <rnovacek@redhat.com> 0.8-2
-- Add support for accessing Hyper-V
-- Resolves: rhbz#860854
-
-* Wed Sep 26 2012 Radek Novacek <rnovacek@redhat.com> 0.8-1
-- Upstream version 0.8
-- RFE: command line improvements
-- Add support for accessing RHEV-M
-- Fix printing tracebacks on terminal
-- Resolves: rhbz#808060, rhbz#846788, rhbz#825215
-
-* Thu Apr 26 2012 Radek Novacek <rnovacek@redhat.com> 0.6-6
-- Handle unknown libvirt event properly
-- Resolves: rhbz#815279
-
-* Wed Apr 18 2012 Radek Novacek <rnovacek@redhat.com> 0.6-5
-- Enable debug output to be written to stderr
-- Log guest list to log even in non-debug mode
-- Resolves: rhbz#813299
-
-* Tue Apr 17 2012 Radek Novacek <rnovacek@redhat.com> 0.6-4
-- Fix regression in double fork patch
-- Resolves: rhbz#813299
-
-* Wed Mar 28 2012 Radek Novacek <rnovacek@redhat.com> 0.6-3
-- Do double fork when daemon is starting
-- Resolves: rhbz#806225
-
-* Fri Mar 09 2012 Radek Novacek <rnovacek@redhat.com> 0.6-2
-- Add python-suds require
-- Requires python-rhsm >= 0.98.6
-- Resolves: rhbz#801657
-
-* Thu Mar 01 2012 Radek Novacek <rnovacek@redhat.com> 0.6-1
-- Rebase to virt-who-0.6
-- Resolves: rhbz#790000
-
-* Wed Oct 12 2011 Radek Novacek <rnovacek@redhat.com> 0.3-3
-- Use updateConsumer API instead of updateConsumerFact (fixes limit 255 chars of uuid list)
-- Requires python-rhsm >= 0.96.13 
-- Resolves: rhbz#743823
-
-* Wed Sep 07 2011 Radek Novacek <rnovacek@redhat.com> - 0.3-2
-- Add upstream patch that prevents failure when server not implements /status/ command
-- Resolves: rhbz#735793
+* Thu Oct 06 2011 Radek Novacek <rnovacek@redhat.com> - 0.3-2
+- Requires python-rhsm >= 0.96.13 (contains fix for char limit in uuid list)
 
 * Thu Sep 01 2011 Radek Novacek <rnovacek@redhat.com> - 0.3-1
 - Add initscript and configuration file
-
-* Mon Aug 22 2011 Radek Novacek <rnovacek@redhat.com> - 0.2-2
-- Bump release because of tagging in wrong branch
 
 * Mon Aug 22 2011 Radek Novacek <rnovacek@redhat.com> - 0.2-1
 - Update to upstream version 0.2

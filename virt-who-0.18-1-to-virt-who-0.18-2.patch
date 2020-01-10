@@ -1,0 +1,65 @@
+diff --git a/rel-eng/packages/virt-who b/rel-eng/packages/virt-who
+index 73041c7..9f679ec 100644
+--- a/rel-eng/packages/virt-who
++++ b/rel-eng/packages/virt-who
+@@ -1 +1 @@
+-0.18-1 ./
++0.18-2 ./
+diff --git a/tests/test_virtwho.py b/tests/test_virtwho.py
+index 622441d..ee02843 100644
+--- a/tests/test_virtwho.py
++++ b/tests/test_virtwho.py
+@@ -391,7 +391,7 @@ class TestSend(TestBase):
+         virtwho.check_reports_state()
+ 
+         virtwho.send.assert_called_with(report)
+-        self.assertEquals(virtwho.send_after, initial + 60)
++        self.assertEquals(virtwho.send_after, initial + options.interval)
+ 
+     @patch('time.time')
+     @patch('virtwho.log.getLogger')
+@@ -443,7 +443,7 @@ class TestSend(TestBase):
+         virtwho.send_current_report()
+         retry_after = 60
+         self.assertEquals(virtwho.retry_after, retry_after)
+-        self.assertEquals(virtwho.send_after, initial + retry_after)
++        self.assertEquals(virtwho.send_after, initial + options.interval)
+         self.assertEquals(len(virtwho.queued_reports), 0)
+ 
+ 
+diff --git a/virt-who.spec b/virt-who.spec
+index e6d603a..704d3af 100644
+--- a/virt-who.spec
++++ b/virt-who.spec
+@@ -2,7 +2,7 @@
+ 
+ Name:           virt-who
+ Version:        0.18
+-Release:        1%{?dist}
++Release:        2%{?dist}
+ Summary:        Agent for reporting virtual guest IDs to subscription-manager
+ 
+ Group:          System Environment/Base
+@@ -123,6 +123,9 @@ fi
+ 
+ 
+ %changelog
++* Tue Jan 03 2017 Christopher Snyder <csnyder@redhat.com> 0.18-2
++- 1409811: Obey the interval setting (csnyder@redhat.com)
++
+ * Tue Oct 11 2016 Radek Novacek <rnovacek@redhat.com> 0.18-1
+ - Version 0.18
+ 
+diff --git a/virtwho/executor.py b/virtwho/executor.py
+index 9319f4f..a4e3802 100644
+--- a/virtwho/executor.py
++++ b/virtwho/executor.py
+@@ -117,7 +117,7 @@ class Executor(object):
+ 
+     def report_done(self, report):
+         name = report.config.name
+-        self.send_after = time.time() + self.retry_after
++        self.send_after = time.time() + self.options.interval
+         if report.state == AbstractVirtReport.STATE_FINISHED:
+             self.last_reports_hash[name] = report.hash
+ 

@@ -18,6 +18,8 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
+import logging
+from mock import patch
 
 # hack to use unittest2 on python <= 2.6, unittest otherwise
 # based on python version
@@ -27,14 +29,10 @@ if sys.version_info[0] > 2 or sys.version_info[1] > 6:
 else:
     import unittest2 as unittest
 
-import logging
-import log
-from mock import patch
-
 
 class TestBase(unittest.TestCase):
     @classmethod
-    @patch('log.getLogger')
+    @patch('virtwho.log.getLogger')
     def setUpClass(cls, logger):
         cls.logger = logging.getLogger("")
         cls.logger.handlers = []

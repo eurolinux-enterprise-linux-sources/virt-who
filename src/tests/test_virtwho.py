@@ -20,21 +20,25 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import sys
 import os
-from base import TestBase, unittest
-import logging
-from rhsm.connection import RestlibException
-
-from mock import patch, Mock, sentinel, ANY
-
-from virtwho import parseOptions, VirtWho, OptionError, Queue, Job
-from config import Config
-import util
-from virt import HostGuestAssociationReport, Hypervisor, Guest, DomainListReport
+from Queue import Empty
 from multiprocessing import Queue
+from mock import patch, Mock, sentinel, ANY, call
+
+from base import TestBase
+
+from virtwho import util
+from virtwho.config import Config
+from virtwho.manager import ManagerThrottleError, ManagerFatalError
+from virtwho.virt import (
+    HostGuestAssociationReport, Hypervisor, Guest,
+    DomainListReport, AbstractVirtReport)
+from virtwho.parser import parseOptions, OptionError
+from virtwho.executor import Executor, ReloadRequest
+from virtwho.main import _main
 
 
 class TestOptions(TestBase):
-    NO_GENERAL_CONF = {'global':{}}
+    NO_GENERAL_CONF = {'global': {}}
 
     def setUp(self):
         self.clearEnv()
@@ -47,8 +51,8 @@ class TestOptions(TestBase):
     def setUpParseFile(self, parseFileMock):
         parseFileMock.return_value = TestOptions.NO_GENERAL_CONF
 
-    @patch('log.getLogger')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.config.parseFile')
     def test_default_cmdline_options(self, parseFile, getLogger):
         self.setUpParseFile(parseFile)
         sys.argv = ["virtwho.py"]
@@ -61,8 +65,8 @@ class TestOptions(TestBase):
         self.assertEqual(options.virtType, None)
         self.assertEqual(options.reporter_id, util.generateReporterId())
 
-    @patch('log.getLogger')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.config.parseFile')
     def test_minimum_interval_options(self, parseFile, getLogger):
         self.setUpParseFile(parseFile)
         sys.argv = ["virtwho.py", "--interval=5"]
@@ -82,13 +86,13 @@ class TestOptions(TestBase):
         _, options = parseOptions()
         self.assertEqual(options.interval, 60)
 
-    @patch('log.getLogger')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.config.parseFile')
     def test_options_hierarchy_for_reporter_id(self, parseFile, getLogger):
         # Set the value in all three possible locations
         # Mock /etc/virt-who.conf file
         global_conf_dict = {
-            'global':{
+            'global': {
                 'reporter_id': "/etc/virt-who.conf"
             }
         }
@@ -111,13 +115,13 @@ class TestOptions(TestBase):
         _, options = parseOptions()
         self.assertEqual(options.reporter_id, "/etc/virt-who.conf")
 
-        parseFile.return_value = {'global':{}}
+        parseFile.return_value = {'global': {}}
 
         _, options = parseOptions()
         self.assertEqual(options.reporter_id, util.generateReporterId())
 
-    @patch('log.getLogger')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.config.parseFile')
     def test_options_debug(self, parseFile, getLogger):
         self.setUpParseFile(parseFile)
         sys.argv = ["virtwho.py", "-d"]
@@ -129,8 +133,8 @@ class TestOptions(TestBase):
         _, options = parseOptions()
         self.assertTrue(options.debug)
 
-    @patch('log.getLogger')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.config.parseFile')
     def test_options_virt(self, parseFile, getLogger):
         self.setUpParseFile(parseFile)
         for virt in ['esx', 'hyperv', 'rhevm']:
@@ -163,8 +167,8 @@ class TestOptions(TestBase):
             self.assertEqual(options.username, 'xusername')
             self.assertEqual(options.password, 'xpassword')
 
-    @patch('log.getLogger')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.config.parseFile')
     def test_options_virt_satellite(self, parseFile, getLogger):
         self.setUpParseFile(parseFile)
         for virt in ['esx', 'hyperv', 'rhevm']:
@@ -204,8 +208,8 @@ class TestOptions(TestBase):
             self.assertEqual(options.username, 'xusername')
             self.assertEqual(options.password, 'xpassword')
 
-    @patch('log.getLogger')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.config.parseFile')
     def test_missing_option(self, parseFile, getLogger):
         self.setUpParseFile(parseFile)
         for smType in ['satellite', 'sam']:
@@ -228,13 +232,12 @@ class TestOptions(TestBase):
                     if virt not in ('libvirt', 'vdsm') and missing != 'password':
                         if smType == 'satellite' and missing in ['env', 'owner']:
                             continue
-                        print(smType, virt, missing)
                         self.assertRaises(OptionError, parseOptions)
 
-    @patch('log.getLogger')
-    @patch('virt.Virt.fromConfig')
-    @patch('manager.Manager.fromOptions')
-    @patch('config.parseFile')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.virt.Virt.fromConfig')
+    @patch('virtwho.manager.Manager.fromOptions')
+    @patch('virtwho.config.parseFile')
     def test_sending_guests(self, parseFile, fromOptions, fromConfig, getLogger):
         self.setUpParseFile(parseFile)
         options = Mock()
@@ -249,7 +252,7 @@ class TestOptions(TestBase):
         options.log_file = ''
         getLogger.return_value = sentinel.logger
         fromConfig.return_value.config.name = 'test'
-        virtwho = VirtWho(self.logger, options, config_dir="/nonexistant")
+        virtwho = Executor(self.logger, options, config_dir="/nonexistant")
         config = Config("test", "esx", server="localhost", username="username",
                         password="password", owner="owner", env="env")
         virtwho.configManager.addConfig(config)
@@ -260,47 +263,6 @@ class TestOptions(TestBase):
         fromConfig.assert_called_with(sentinel.logger, config)
         self.assertTrue(fromConfig.return_value.start.called)
         fromOptions.assert_called_with(self.logger, options, ANY)
-
-
-class TestJobs(TestBase):
-    def setupVirtWho(self, oneshot=True):
-        options = Mock()
-        options.oneshot = oneshot
-        options.interval = 0
-        options.print_ = False
-        options.log_dir = ''
-        options.log_file = ''
-        virtwho = VirtWho(self.logger, options, config_dir="/nonexistant")
-        config = Config("test", "esx", server="localhost", username="username",
-                        password="password", owner="owner", env="env")
-        virtwho.configManager.addConfig(config)
-        return virtwho
-
-    @patch('log.getLogger')
-    def test_adding_job(self, getLogger):
-        virtwho = self.setupVirtWho()
-        # Mock out a method we want to call
-        virtwho.send = Mock()
-        fake_report = 'fake_report'
-        # Add an actual job to be executed immediately
-        test_job = Job('send', [fake_report])
-        virtwho.addJob(test_job)
-        virtwho.run()
-        virtwho.send.assert_called_with(fake_report)
-
-    @patch('log.getLogger')
-    def test_adding_tuple_of_job(self, getLogger):
-        # We should be able to pass in tuples like below and achieve the same
-        # result as if we passed in a Job object
-
-        # (target, [args], executeInSeconds, executeAfter)
-        fake_report = 'fakereport'
-        test_job_tuple = ('send', [fake_report])
-        virtwho = self.setupVirtWho()
-        virtwho.send = Mock()
-        virtwho.addJob(test_job_tuple)
-        virtwho.run()
-        virtwho.send.assert_called_with(fake_report)
 
 
 class TestSend(TestBase):
@@ -320,9 +282,9 @@ class TestSend(TestBase):
         self.fake_domain_list = DomainListReport(self.second_config, guests)
         self.fake_report = HostGuestAssociationReport(self.config, assoc)
 
-    @patch('log.getLogger')
-    @patch('manager.Manager.fromOptions')
-    @patch('virt.Virt.fromConfig')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.manager.Manager.fromOptions')
+    @patch('virtwho.virt.Virt.fromConfig')
     def test_report_hash_added_after_send(self, fromConfig, fromOptions, getLogger):
         # Side effect for fromConfig
         def fake_virts(logger, config):
@@ -337,10 +299,15 @@ class TestSend(TestBase):
         options.print_ = False
         options.log_file = ''
         options.log_dir = ''
-        virtwho = VirtWho(self.logger, options, config_dir="/nonexistant")
-        virtwho.send = Mock(wraps=virtwho.send)
+        virtwho = Executor(self.logger, options, config_dir="/nonexistant")
+
+        def send(report):
+            report.state = AbstractVirtReport.STATE_FINISHED
+            return True
+        virtwho.send = Mock(side_effect=send)
         queue = Queue()
         virtwho.queue = queue
+        virtwho.retry_after = 1
         virtwho.configManager.addConfig(self.config)
         virtwho.configManager.addConfig(self.second_config)
         queue.put(self.fake_report)
@@ -348,51 +315,53 @@ class TestSend(TestBase):
         virtwho.run()
 
         self.assertEquals(virtwho.send.call_count, 2)
-        self.assertTrue(virtwho.reports[self.config.hash] == self.fake_report.hash)
-        self.assertTrue(virtwho.reports[self.second_config.hash] == self.fake_domain_list.hash)
+        self.assertEqual(virtwho.last_reports_hash[self.config.name], self.fake_report.hash)
+        self.assertEqual(virtwho.last_reports_hash[self.second_config.name], self.fake_domain_list.hash)
 
-    @patch('log.getLogger')
-    @patch('manager.Manager.fromOptions')
-    @patch('virt.Virt.fromConfig')
-    def test_update_report_to_send(self, fromConfig, fromOptions, getLogger):
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.manager.Manager.fromOptions')
+    @patch('virtwho.virt.Virt.fromConfig')
+    def test_same_report_filtering(self, fromConfig, fromOptions, getLogger):
+        def fake_virts(logger, config):
+            new_fake_virt = Mock()
+            new_fake_virt.config.name = config.name
+            return new_fake_virt
+
+        fromConfig.side_effect = fake_virts
         options = Mock()
         options.interval = 0
         options.oneshot = True
         options.print_ = False
         options.log_dir = ''
         options.log_file = ''
-        virtwho = VirtWho(self.logger, options, config_dir="/nonexistant")
-        report = Mock()
-        report.hash.return_value = "hash"
-        config = Mock()
-        report.config = config
-        config.hash.return_value = "config_hash"
-        config.name.return_value = "config_name"
-        self.assertTrue(virtwho.update_report_to_send(report))
-        self.assertTrue(len(virtwho.configs_ready) == 1 and
-                        config in virtwho.configs_ready)
-        self.assertTrue(virtwho.reports_to_send[config.hash].hash == report.hash)
-        # Pretend we sent the report for that config
-        virtwho.configs_ready = []
-        virtwho.reports[config.hash] = report.hash
-        del virtwho.reports_to_send[config.hash]
+        virtwho = Executor(self.logger, options, config_dir="/nonexistant")
 
-        # if we receive the same report twice we should not send it
-        self.assertFalse(virtwho.update_report_to_send(report))
-        self.assertFalse(virtwho.configs_ready)
-        self.assertFalse(virtwho.reports_to_send)
+        queue = Queue()
+        # Create another report with same hash
+        report2 = HostGuestAssociationReport(self.config, self.fake_report.association)
+        self.assertEqual(self.fake_report.hash, report2.hash)
+
+        def send(report):
+            report.state = AbstractVirtReport.STATE_FINISHED
+            # Put second report when the first is done
+            queue.put(report2)
+            return True
+        virtwho.send = Mock(side_effect=send)
+        virtwho.queue = queue
+        virtwho.retry_after = 1
+        virtwho.configManager.addConfig(self.config)
+        queue.put(self.fake_report)
+        virtwho.run()
+
+        self.assertEquals(virtwho.send.call_count, 1)
 
     @patch('time.time')
-    @patch('log.getLogger')
-    @patch('manager.Manager.fromOptions')
-    @patch('virt.Virt.fromConfig')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.manager.Manager.fromOptions')
+    @patch('virtwho.virt.Virt.fromConfig')
     def test_send_current_report(self, fromConfig, fromOptions, getLogger, time):
-        initial = 0
-        start_time = 0
-        end_time = 2
-        send_after_start_time = 0
-        expected_delta = end_time - start_time
-        time.side_effect = [initial, start_time, end_time, send_after_start_time]
+        initial = 10
+        time.side_effect = [initial, initial]
 
         fromOptions.return_value = Mock()
         options = Mock()
@@ -401,10 +370,8 @@ class TestSend(TestBase):
         options.print_ = False
         options.log_dir = ''
         options.log_file = ''
-        virtwho = VirtWho(Mock(), options, config_dir="/nonexistant")
-
-        expected_queue_timeout = max(0, options.interval - expected_delta)
-        expected_send_after = expected_queue_timeout + send_after_start_time
+        virtwho = Executor(Mock(), options, config_dir="/nonexistant")
+        virtwho.oneshot_remaining = ['config_name']
 
         config = Mock()
         config.hash = "config_hash"
@@ -412,29 +379,28 @@ class TestSend(TestBase):
 
         virtwho.send = Mock()
         virtwho.send.return_value = True
-        virtwho.reports_to_send[config.hash] = sentinel.report
-        virtwho.configs_ready.append(config)
+        report = HostGuestAssociationReport(config, {'hypervisors': {}})
+        report.state = AbstractVirtReport.STATE_PROCESSING
+        virtwho.queued_reports[config.name] = report
 
-        result_config, result_report = virtwho.send_current_report()
+        virtwho.send_current_report()
 
-        self.assertEquals(expected_queue_timeout, virtwho.queue_timeout)
-        self.assertEquals(expected_send_after, virtwho.send_after)
-        self.assertEquals(config, result_config)
-        self.assertEquals(sentinel.report, result_report)
-        self.assertTrue(not virtwho.reports_to_send)
+        def check_report_state(report):
+            report.state = AbstractVirtReport.STATE_FINISHED
+        virtwho.check_report_state = Mock(side_effect=check_report_state)
+        virtwho.check_reports_state()
+
+        virtwho.send.assert_called_with(report)
+        self.assertEquals(virtwho.send_after, initial + 60)
 
     @patch('time.time')
-    @patch('log.getLogger')
-    @patch('manager.Manager.fromOptions')
-    @patch('virt.Virt.fromConfig')
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.manager.Manager.fromOptions')
+    @patch('virtwho.virt.Virt.fromConfig')
     def test_send_current_report_with_429(self, fromConfig, fromOptions, getLogger, time):
-        initial = 0
-        start_time = 0
-        end_time = 2
-        send_after_start_time = 0
+        initial = 10
         retry_after = 2
-        expected_429_count = 1
-        time.side_effect = [initial, initial, start_time,  send_after_start_time]
+        time.return_value = initial
 
         fromOptions.return_value = Mock()
         options = Mock()
@@ -443,26 +409,116 @@ class TestSend(TestBase):
         options.print_ = False
         options.log_dir = ''
         options.log_file = ''
-        virtwho = VirtWho(Mock(), options, config_dir="/nonexistant")
-
-        expected_queue_timeout = retry_after ** expected_429_count
-        expected_send_after = expected_queue_timeout + send_after_start_time
+        virtwho = Executor(Mock(), options, config_dir="/nonexistant")
 
         config = Mock()
         config.hash = "config_hash"
         config.name = "config_name"
-        virtwho.configs_ready.append(config)
-        virtwho.reports_to_send[config.hash] = sentinel.report
+
+        report = HostGuestAssociationReport(config, {'hypervisors': []})
+        report.state = AbstractVirtReport.STATE_PROCESSING
+        virtwho.queued_reports[config.name] = report
 
         virtwho.send = Mock()
         virtwho.send.return_value = False
-        virtwho.send.side_effect = RestlibException("429", "429", {"Retry-After": retry_after})
+        virtwho.send.side_effect = ManagerThrottleError(retry_after)
 
-        result_config, result_report = virtwho.send_current_report()
+        virtwho.send_current_report()
 
-        self.assertEquals(expected_queue_timeout, virtwho.queue_timeout)
-        self.assertEquals(expected_send_after, virtwho.send_after)
-        self.assertEquals(result_config, config)
-        self.assertEquals(None, result_report)
-        self.assertEquals(len(virtwho.reports_to_send), 1)
-        self.assertTrue(config in virtwho.configs_ready)
+        virtwho.send.assert_called_with(report)
+        self.assertEquals(virtwho.send_after, initial + 60)
+        self.assertEquals(len(virtwho.queued_reports), 1)
+
+        retry_after = 120
+        virtwho.send.side_effect = ManagerThrottleError(retry_after)
+        virtwho.send_current_report()
+        virtwho.send.assert_called_with(report)
+        self.assertEquals(virtwho.send_after, initial + retry_after * 2)
+        self.assertEquals(len(virtwho.queued_reports), 1)
+
+        def finish(x):
+            report.state = AbstractVirtReport.STATE_FINISHED
+            return True
+        virtwho.send.side_effect = finish
+        virtwho.send_current_report()
+        retry_after = 60
+        self.assertEquals(virtwho.retry_after, retry_after)
+        self.assertEquals(virtwho.send_after, initial + retry_after)
+        self.assertEquals(len(virtwho.queued_reports), 0)
+
+
+class TestReload(TestBase):
+    def mock_virtwho(self):
+        options = Mock()
+        options.interval = 6
+        options.oneshot = False
+        options.print_ = False
+        virtwho = Executor(Mock(), options, config_dir="/nonexistant")
+        config = Config("env/cmdline", 'libvirt')
+        virtwho.configManager.addConfig(config)
+        virtwho.queue = Mock()
+        virtwho.send = Mock()
+        return virtwho
+
+    def assertStartStop(self, fromConfig):
+        ''' Make sure that Virt was started and stopped. '''
+        self.assertTrue(fromConfig.return_value.start.called)
+        self.assertTrue(fromConfig.return_value.terminate.called)
+
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.virt.Virt.fromConfig')
+    def test_start_unregistered(self, fromConfig, getLogger):
+        virtwho = self.mock_virtwho()
+        virtwho.queue.get.side_effect = [DomainListReport(virtwho.configManager.configs[0], []), Empty, 'reload']
+        virtwho.send.side_effect = ManagerFatalError
+        # When not registered, it should throw ReloadRequest
+        self.assertRaises(ReloadRequest, _main, virtwho)
+        # queue.get should be called 3 times: report, nonblocking reading
+        # of remaining reports and after ManagerFatalError wait indefinately
+        self.assertEqual(virtwho.queue.get.call_count, 3)
+        # It should wait blocking for the reload
+        virtwho.queue.get.assert_has_calls([call(block=True)])
+        self.assertStartStop(fromConfig)
+
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.virt.Virt.fromConfig')
+    def test_exit_after_unregister(self, fromConfig, getLogger):
+        virtwho = self.mock_virtwho()
+        report = DomainListReport(virtwho.configManager.configs[0], [])
+        # Send two reports and then 'exit'
+        virtwho.queue.get.side_effect = [report, Empty, report, Empty, 'exit']
+        # First report will be successful, second one will throw ManagerFatalError
+        virtwho.send.side_effect = [True, ManagerFatalError]
+        # _main should exit normally
+        _main(virtwho)
+        self.assertStartStop(fromConfig)
+
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.virt.Virt.fromConfig')
+    def test_reload_after_unregister(self, fromConfig, getLogger):
+        virtwho = self.mock_virtwho()
+        report = DomainListReport(virtwho.configManager.configs[0], [])
+        # Send two reports and then 'reload'
+        virtwho.queue.get.side_effect = [report, Empty, report, Empty, 'reload']
+        # First report will be successful, second one will throw ManagerFatalError
+        virtwho.send.side_effect = [True, ManagerFatalError]
+        # _main should throw ReloadRequest
+        self.assertRaises(ReloadRequest, _main, virtwho)
+        self.assertStartStop(fromConfig)
+
+    @patch('virtwho.log.getLogger')
+    @patch('virtwho.virt.Virt.fromConfig')
+    def test_reload_after_register(self, fromConfig, getLogger):
+        virtwho = self.mock_virtwho()
+        report = DomainListReport(virtwho.configManager.configs[0], [])
+        # Send report and then 'reload'
+        virtwho.queue.get.side_effect = [report, Empty, 'reload']
+        # First report will be successful, second one will throw ManagerFatalError
+        virtwho.send.side_effect = [ManagerFatalError, True]
+        # _main should throw ReloadRequest
+        self.assertRaises(ReloadRequest, _main, virtwho)
+
+        self.assertEqual(virtwho.queue.get.call_count, 3)
+        # It should wait blocking for the reload
+        virtwho.queue.get.assert_has_calls([call(block=True)])
+        self.assertStartStop(fromConfig)

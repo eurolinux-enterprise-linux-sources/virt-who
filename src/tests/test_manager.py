@@ -24,16 +24,12 @@ import tempfile
 from mock import patch, MagicMock, ANY
 
 from base import TestBase
-from config import Config
-from manager import Manager, ManagerError
 
-from virt import Guest, Virt, Hypervisor
+from virtwho.config import Config
+from virtwho.manager import Manager, ManagerError
+from virtwho.virt import Guest, Hypervisor, HostGuestAssociationReport, DomainListReport
 
 import rhsm.config as rhsm_config
-import rhsm.certificate
-import rhsm.connection
-
-import xmlrpclib
 
 
 xvirt = type("", (), {'CONFIG_TYPE': 'xxx'})()
@@ -41,16 +37,19 @@ xvirt = type("", (), {'CONFIG_TYPE': 'xxx'})()
 
 class TestManager(TestBase):
     """ Test of all available subscription managers. """
-    guest1 = Guest('9c927368-e888-43b4-9cdb-91b10431b258', xvirt, Guest.STATE_RUNNING, hypervisorType='QEMU')
-    guest2 = Guest('d5ffceb5-f79d-41be-a4c1-204f836e144a', xvirt, Guest.STATE_SHUTOFF, hypervisorType='QEMU')
+    guest1 = Guest('9c927368-e888-43b4-9cdb-91b10431b258', xvirt, Guest.STATE_RUNNING)
+    guest2 = Guest('d5ffceb5-f79d-41be-a4c1-204f836e144a', xvirt, Guest.STATE_SHUTOFF)
     guestInfo = [guest1]
+    hypervisor_id = "HYPERVISOR_ID"
 
-    mapping = {
+    config = Config('test', 'libvirt', owner='OWNER', env='ENV')
+    host_guest_report = HostGuestAssociationReport(config, {
         'hypervisors': [
             Hypervisor('9c927368-e888-43b4-9cdb-91b10431b258', []),
-            Hypervisor('ad58b739-5288-4cbc-a984-bd771612d670', [guest1,guest2])
+            Hypervisor('ad58b739-5288-4cbc-a984-bd771612d670', [guest1, guest2])
         ]
-    }
+    })
+    domain_report = DomainListReport(config, [guest1], hypervisor_id)
 
 
 class TestSubscriptionManager(TestManager):
@@ -81,25 +80,37 @@ class TestSubscriptionManager(TestManager):
     def test_sendVirtGuests(self, create_from_file, connection):
         self.prepare(create_from_file, connection)
         config = Config('test', 'libvirt')
+        config.smType = 'sam'
         manager = Manager.fromOptions(self.logger, self.options, config)
-        manager.sendVirtGuests(self.guestInfo)
+        manager.sendVirtGuests(self.domain_report, self.options)
         manager.connection.updateConsumer.assert_called_with(
-                ANY,
-                guest_uuids=[guest.toDict() for guest in self.guestInfo])
+            ANY,
+            guest_uuids=[guest.toDict() for guest in self.guestInfo],
+            hypervisor_id=self.hypervisor_id)
 
     @patch("rhsm.connection.UEPConnection")
     @patch("rhsm.certificate.create_from_file")
     def test_hypervisorCheckIn(self, create_from_file, connection):
         self.prepare(create_from_file, connection)
         config = Config('test', 'libvirt')
+        config.smType = 'sam'
         manager = Manager.fromOptions(self.logger, self.options, config)
         self.options.env = "ENV"
         self.options.owner = "OWNER"
-        manager.hypervisorCheckIn(self.options, self.mapping, options=self.options)
+        manager.hypervisorCheckIn(self.host_guest_report, self.options)
         manager.connection.hypervisorCheckIn.assert_called_with(
-                self.options.owner,
-                self.options.env,
-                dict((host.hypervisorId, [guest.toDict() for guest in host.guestIds]) for host in self.mapping['hypervisors']), options=self.options)
+            self.options.owner,
+            self.options.env,
+            dict(
+                (
+                    host.hypervisorId,
+                    [
+                        guest.toDict()
+                        for guest in host.guestIds
+                    ]
+                )
+                for host in self.host_guest_report.association['hypervisors']),
+            options=self.options)
 
 
 class TestSatellite(TestManager):
@@ -109,9 +120,9 @@ class TestSatellite(TestManager):
         options = MagicMock()
         config = Config('test', 'libvirt', sat_server='localhost')
         manager = Manager.fromOptions(self.logger, options, config)
-        self.assertRaises(ManagerError, manager.sendVirtGuests, self.guestInfo)
+        self.assertRaises(ManagerError, manager.sendVirtGuests, self.domain_report)
 
-    @patch("xmlrpclib.Server")
+    @patch("xmlrpclib.ServerProxy")
     def test_hypervisorCheckIn(self, server):
         options = MagicMock()
         server.return_value.registration.new_system_user_pass.return_value = {
@@ -122,13 +133,13 @@ class TestSatellite(TestManager):
         manager = Manager.fromOptions(self.logger, options, config)
         options.env = "ENV"
         options.owner = "OWNER"
-        manager.hypervisorCheckIn(options, self.mapping, 'ABC')
-        manager.server.registration.virt_notify.assert_called_with(ANY, [
+        manager.hypervisorCheckIn(self.host_guest_report, options)
+        manager.server_xmlrpc.registration.virt_notify.assert_called_with(ANY, [
             [0, "exists", "system", {"identity": "host", "uuid": "0000000000000000"}],
             [0, "crawl_began", "system", {}],
             [0, "exists", "domain", {
                 "memory_size": 0,
-                "name": "VM 9c927368-e888-43b4-9cdb-91b10431b258 from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
+                "name": "VM 9c927368-e888-43b4-9cdb-91b10431b258 from libvirt hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
                 "state": "running",
                 "uuid": "9c927368e88843b49cdb91b10431b258",
                 "vcpus": 1,
@@ -136,7 +147,7 @@ class TestSatellite(TestManager):
             }],
             [0, "exists", "domain", {
                 "memory_size": 0,
-                "name": "VM d5ffceb5-f79d-41be-a4c1-204f836e144a from ABC hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
+                "name": "VM d5ffceb5-f79d-41be-a4c1-204f836e144a from libvirt hypervisor ad58b739-5288-4cbc-a984-bd771612d670",
                 "state": "shutoff",
                 "uuid": "d5ffceb5f79d41bea4c1204f836e144a",
                 "vcpus": 1,

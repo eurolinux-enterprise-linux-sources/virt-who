@@ -17,17 +17,17 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
-
-import logging
-import urllib2
+import os
+import requests
 import suds
 from mock import patch, ANY, MagicMock, Mock
 from multiprocessing import Queue, Event
 
 from base import TestBase
-from config import Config
-from virt.esx import Esx
-from virt import VirtError, Guest, Hypervisor, HostGuestAssociationReport
+from virtwho.config import Config
+from virtwho.virt.esx import Esx
+from virtwho.virt import VirtError, Guest, Hypervisor, HostGuestAssociationReport
+from proxy import Proxy
 
 
 class TestEsx(TestBase):
@@ -51,13 +51,13 @@ class TestEsx(TestBase):
         self.run_once()
 
         self.assertTrue(mock_client.called)
-        mock_client.assert_called_with(ANY, location="https://localhost/sdk", cache=None)
+        mock_client.assert_called_with(ANY, location="https://localhost/sdk", cache=None, transport=ANY)
         mock_client.return_value.service.RetrieveServiceContent.assert_called_once_with(_this=ANY)
         mock_client.return_value.service.Login.assert_called_once_with(_this=ANY, userName='username', password='password')
 
     @patch('suds.client.Client')
     def test_connection_timeout(self, mock_client):
-        mock_client.side_effect = urllib2.URLError('timed out')
+        mock_client.side_effect = requests.Timeout('timed out')
         self.assertRaises(VirtError, self.run_once)
 
     @patch('suds.client.Client')
@@ -73,7 +73,7 @@ class TestEsx(TestBase):
         self.run_once()
 
         self.assertTrue(mock_client.called)
-        mock_client.assert_called_with(ANY, location="https://localhost/sdk")
+        mock_client.assert_called_with(ANY, location="https://localhost/sdk", transport=ANY)
         mock_client.return_value.service.RetrieveServiceContent.assert_called_once_with(_this=ANY)
         mock_client.return_value.service.Login.assert_called_once_with(_this=ANY, userName='username', password='password')
 
@@ -99,6 +99,7 @@ class TestEsx(TestBase):
         fake_host = {'hardware.systemInfo.uuid': expected_hypervisorId,
                      'config.network.dnsConfig.hostName': 'hostname',
                      'config.network.dnsConfig.domainName': 'domainname',
+                     'config.product.version': '1.2.3',
                      'hardware.cpuInfo.numCpuPackages': '1',
                      'name': expected_hostname,
                      'parent': fake_parent,
@@ -115,11 +116,12 @@ class TestEsx(TestBase):
                     expected_guestId,
                     self.esx,
                     expected_guest_state,
-                    hypervisorType='vmware'
                 )
             ],
             facts={
-                'cpu.cpu_socket(s)': '1',
+                Hypervisor.CPU_SOCKET_FACT: '1',
+                Hypervisor.HYPERVISOR_TYPE_FACT: 'vmware',
+                Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
             }
         )
         result = self.esx.getHostGuestMapping()['hypervisors'][0]
@@ -147,6 +149,7 @@ class TestEsx(TestBase):
         fake_host = {'hardware.systemInfo.uuid': expected_hypervisorId,
                      'config.network.dnsConfig.hostName': 'hostname',
                      'config.network.dnsConfig.domainName': 'domainname',
+                     'config.product.version': '1.2.3',
                      'hardware.cpuInfo.numCpuPackages': '1',
                      'parent': fake_parent,
                      'vm': fake_vm
@@ -162,11 +165,12 @@ class TestEsx(TestBase):
                     expected_guestId,
                     self.esx,
                     expected_guest_state,
-                    hypervisorType='vmware'
                 )
             ],
             facts={
-                'cpu.cpu_socket(s)': '1',
+                Hypervisor.CPU_SOCKET_FACT: '1',
+                Hypervisor.HYPERVISOR_TYPE_FACT: 'vmware',
+                Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
             }
         )
         result = self.esx.getHostGuestMapping()['hypervisors'][0]
@@ -190,3 +194,16 @@ class TestEsx(TestBase):
         result_report = queue.get(block=True, timeout=1)
         self.assertEqual(expected_report.config.hash, result_report.config.hash)
         self.assertEqual(expected_report._assoc, result_report._assoc)
+
+    def test_proxy(self):
+        self.esx.config.simplified_vim = True
+        proxy = Proxy()
+        self.addCleanup(proxy.terminate)
+        proxy.start()
+        oldenv = os.environ.copy()
+        self.addCleanup(lambda: setattr(os, 'environ', oldenv))
+        os.environ['https_proxy'] = proxy.address
+
+        self.assertRaises(VirtError, self.run_once)
+        self.assertIsNotNone(proxy.last_path, "Proxy was not called")
+        self.assertEqual(proxy.last_path, 'localhost:443')

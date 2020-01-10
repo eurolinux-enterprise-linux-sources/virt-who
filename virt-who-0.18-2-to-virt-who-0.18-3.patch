@@ -1,0 +1,99 @@
+diff --git a/rel-eng/packages/virt-who b/rel-eng/packages/virt-who
+index 9f679ec..e1a60ea 100644
+--- a/rel-eng/packages/virt-who
++++ b/rel-eng/packages/virt-who
+@@ -1 +1 @@
+-0.18-2 ./
++0.18-3 ./
+diff --git a/tests/test_satellite.py b/tests/test_satellite.py
+index 6807b41..bbeecb3 100644
+--- a/tests/test_satellite.py
++++ b/tests/test_satellite.py
+@@ -61,6 +61,7 @@ class FakeSatellite(SimpleXMLRPCServer):
+         self.register_function(self.get_channel_details, "channel.software.getDetails")
+         self.register_function(self.create_channel, "channel.software.create")
+         self.register_function(self.set_map_for_org, "distchannel.setMapForOrg")
++        self.register_function(self.get_user_details, "user.getDetails")
+ 
+         self.channel_created = False
+         self.created_system = None
+@@ -128,6 +129,9 @@ class FakeSatellite(SimpleXMLRPCServer):
+         assert session == self.AUTH_TOKEN
+         return 1
+ 
++    def get_user_details(self, session, login):
++        assert session == self.AUTH_TOKEN
++        return dict(org_id=101)
+ 
+ class Options(object):
+     def __init__(self, server, username, password):
+diff --git a/virt-who.spec b/virt-who.spec
+index 704d3af..4fe21a1 100644
+--- a/virt-who.spec
++++ b/virt-who.spec
+@@ -1,8 +1,12 @@
+ %define use_systemd (0%{?fedora} && 0%{?fedora} >= 18) || (0%{?rhel} && 0%{?rhel} >= 7)
++%if !%{use_systemd}
++%global __python2 %{__python}
++%global python2_sitelib %{python_sitelib}
++%endif
+ 
+ Name:           virt-who
+ Version:        0.18
+-Release:        2%{?dist}
++Release:        3%{?dist}
+ Summary:        Agent for reporting virtual guest IDs to subscription-manager
+ 
+ Group:          System Environment/Base
+@@ -123,6 +127,10 @@ fi
+ 
+ 
+ %changelog
++* Tue Jan 31 2017 Christopher Snyder <csnyder@redhat.com> 0.18-3
++- Update spec file for RHEL builds (csnyder@redhat.com)
++- 1410000: Include org_id in hv base channel (pcreech@redhat.com)
++
+ * Tue Jan 03 2017 Christopher Snyder <csnyder@redhat.com> 0.18-2
+ - 1409811: Obey the interval setting (csnyder@redhat.com)
+ 
+diff --git a/virtwho/manager/satellite/satellite.py b/virtwho/manager/satellite/satellite.py
+index 2808d82..b27f3f9 100644
+--- a/virtwho/manager/satellite/satellite.py
++++ b/virtwho/manager/satellite/satellite.py
+@@ -91,7 +91,17 @@ class Satellite(Manager):
+             raise SatelliteError("Unable to login to satellite5 server: %s" % str(e))
+ 
+         try:
+-            hypervisor_base_channel = self.server_rpcapi.channel.software.getDetails(session, 'hypervisor-base')
++            userdetail = self.server_rpcapi.user.getDetails(session, self.username)
++            org_id = userdetail["org_id"]
++        except Exception as e:
++            self.logger.exception("Unable to get user details")
++            raise SatelliteError("Unable to get user details: %s" % str(e))
++
++        base_channel_name = 'hypervisor-base-%s' % org_id
++        base_channel_label = 'Hypervisor Base - %s' % org_id
++
++        try:
++            hypervisor_base_channel = self.server_rpcapi.channel.software.getDetails(session, base_channel_name)
+             self.logger.debug("Using existing hypervisor-base channel")
+         except xmlrpclib.Fault as e:
+             if e.faultCode == -210:
+@@ -106,7 +116,7 @@ class Satellite(Manager):
+             # Create the channel
+             try:
+                 result = self.server_rpcapi.channel.software.create(
+-                    session, 'hypervisor-base', 'Hypervisor Base',
++                    session, base_channel_name, base_channel_label,
+                     'Channel used by virt-who for hypervisor registration',
+                     'channel-x86_64', '')
+             except Exception as e:
+@@ -116,7 +126,7 @@ class Satellite(Manager):
+                 raise SatelliteError("Unable to create hypervisor-base channel, satellite returned code %s" % result)
+ 
+             try:
+-                result = self.server_rpcapi.distchannel.setMapForOrg(session, 'Hypervisor OS', 'unknown', 'x86_64', 'hypervisor-base')
++                result = self.server_rpcapi.distchannel.setMapForOrg(session, 'Hypervisor OS', 'unknown', 'x86_64', base_channel_name)
+             except Exception as e:
+                 self.logger.exception("Unable to create mapping for hypervisor-base channel")
+                 raise SatelliteError("Unable to create mapping for hypervisor-base channel: %s" % str(e))

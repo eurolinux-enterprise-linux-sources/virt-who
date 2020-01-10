@@ -1,5 +1,7 @@
+%define use_systemd (0%{?fedora} && 0%{?fedora} >= 18) || (0%{?rhel} && 0%{?rhel} >= 7)
+
 Name:           virt-who
-Version:        0.16
+Version:        0.18
 Release:        1%{?dist}
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
 
@@ -11,6 +13,8 @@ BuildRoot:      %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
 BuildArch:      noarch
 BuildRequires:  python2-devel
+BuildRequires:  python-setuptools
+Requires:       python-setuptools
 Requires:       libvirt-python
 # python-rhsm 1.10.10 has required call for guestId support
 Requires:       python-rhsm >= 1.10.10
@@ -18,10 +22,20 @@ Requires:       python-rhsm >= 1.10.10
 Requires:       python-suds
 # m2crypto is required for Hyper-V support
 Requires:       m2crypto
+Requires:       python-requests
+
+%if %{use_systemd}
+Requires: systemd-python
+BuildRequires: systemd
+Requires(post): systemd
+Requires(preun): systemd
+Requires(postun): systemd
+%else
 Requires(post): chkconfig
 Requires(preun): chkconfig
 # This is for /sbin/service
 Requires(preun): initscripts
+%endif
 
 %description
 Agent that collects information about virtual guests present in the system and
@@ -32,15 +46,24 @@ report them to the subscription manager.
 
 
 %build
-
+%{__python2} setup.py build
 
 %install
 rm -rf $RPM_BUILD_ROOT
+%{__python2} setup.py install --root %{buildroot}
+%{__python2} setup.py install_config --root %{buildroot}
+%{__python2} setup.py install_man_pages --root %{buildroot}
+%if %{use_systemd}
+%{__python2} setup.py install_systemd --root %{buildroot}
+%else
+%{__python2} setup.py install_upstart --root %{buildroot}
+%endif
 
-make DESTDIR=$RPM_BUILD_ROOT install
-mkdir -p %{buildroot}/%{_sharedstatedir}/%{name}
-mkdir -p %{buildroot}/%{_sysconfdir}/virt-who.d
+mkdir -p %{buildroot}/%{_sharedstatedir}/%{name}/
 touch %{buildroot}/%{_sharedstatedir}/%{name}/key
+
+mkdir -p %{buildroot}/%{_datadir}/zsh/site-functions
+install -m 644 virt-who-zsh %{buildroot}/%{_datadir}/zsh/site-functions/_virt-who
 
 # Don't run test suite in check section, because it need the system to be
 # registered to subscription-manager server
@@ -49,39 +72,63 @@ touch %{buildroot}/%{_sharedstatedir}/%{name}/key
 rm -rf $RPM_BUILD_ROOT
 
 %post
+%if %{use_systemd}
+%systemd_post virt-who.service
+%else
 # This adds the proper /etc/rc*.d links for the script
 /sbin/chkconfig --add virt-who
+%endif
+
 
 %preun
+%if %{use_systemd}
+%systemd_preun virt-who.service
+%else
 if [ $1 -eq 0 ] ; then
     /sbin/service virt-who stop >/dev/null 2>&1
     /sbin/chkconfig --del virt-who
 fi
+%endif
 
 %postun
+%if %{use_systemd}
+%systemd_postun_with_restart virt-who.service
+%else
 if [ "$1" -ge "1" ] ; then
     /sbin/service virt-who condrestart >/dev/null 2>&1 || :
 fi
+%endif
 
 
 %files
-%doc README.md LICENSE
+%doc README.md LICENSE README.hyperv
 %{_bindir}/virt-who
 %{_bindir}/virt-who-password
-%{_datadir}/virt-who/
+%{python2_sitelib}/*
+%if %{use_systemd}
+%{_unitdir}/virt-who.service
+%else
 %{_sysconfdir}/rc.d/init.d/virt-who
-%{_sysconfdir}/virt-who.conf
-%attr(600, root, root) %dir %{_sysconfdir}/virt-who.d
-%attr(700, root, root) %config(noreplace) %{_sysconfdir}/sysconfig/virt-who
+%endif
+%attr(600, root, root) %config(noreplace) %{_sysconfdir}/sysconfig/virt-who
+%attr(700, root, root) %dir %{_sysconfdir}/virt-who.d
 %{_mandir}/man8/virt-who.8.gz
 %{_mandir}/man8/virt-who-password.8.gz
 %{_mandir}/man5/virt-who-config.5.gz
 %attr(700, root, root) %{_sharedstatedir}/%{name}
 %ghost %{_sharedstatedir}/%{name}/key
+%{_datadir}/zsh/site-functions/_virt-who
 %{_sysconfdir}/virt-who.d/template.conf
 %{_sysconfdir}/virt-who.conf
 
+
 %changelog
+* Tue Oct 11 2016 Radek Novacek <rnovacek@redhat.com> 0.18-1
+- Version 0.18
+
+* Tue May 17 2016 Radek Novacek <rnovacek@redhat.com> 0.17-1
+- Version 0.17
+
 * Thu Dec 17 2015 Radek Novacek <rnovacek@redhat.com> 0.16-1
 - Version 0.16
 
