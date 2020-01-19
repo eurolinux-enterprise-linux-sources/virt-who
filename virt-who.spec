@@ -4,23 +4,20 @@
 %global python2_sitelib %{python_sitelib}
 %endif
 
+%global release_number 1
+
+%global git_tag %{name}-%{version}-%{release_number}
+
+
 Name:           virt-who
-Version:        0.19
-Release:        9%{?dist}
+Version:        0.21.5
+Release:        %{release_number}%{?dist}
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
 
 Group:          System Environment/Base
 License:        GPLv2+
-URL:            https://fedorahosted.org/virt-who/
-Source0:        https://fedorahosted.org/releases/v/i/virt-who/%{name}-%{version}.tar.gz
-Patch0: virt-who-0.19-1-to-virt-who-0.19-2.patch
-Patch1: virt-who-0.19-2-to-virt-who-0.19-3.patch
-Patch2: virt-who-0.19-3-to-virt-who-0.19-4.patch
-Patch3: virt-who-0.19-4-to-virt-who-0.19-5.patch
-Patch4: virt-who-0.19-5-to-virt-who-0.19-6.patch
-Patch5: virt-who-0.19-6-to-virt-who-0.19-7.patch
-Patch6: virt-who-0.19-7-to-virt-who-0.19-8.patch
-Patch7: virt-who-0.19-8-to-virt-who-0.19-9.patch
+URL:            https://github.com/virt-who/virt-who
+Source0:        https://codeload.github.com/virt-who/virt-who/tar.gz/%{git_tag}#/%{name}-%{version}.tar.gz
 BuildRoot:      %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
 BuildArch:      noarch
@@ -35,6 +32,8 @@ Requires:       python-suds
 # m2crypto is required for Hyper-V support
 Requires:       m2crypto
 Requires:       python-requests
+# python-argparse is required for Python 2.6 on EL6
+%{?el6:Requires: python-argparse}
 Requires:       openssl
 
 %if %{use_systemd}
@@ -56,14 +55,6 @@ report them to the subscription manager.
 
 %prep
 %setup -q
-%patch0 -p1
-%patch1 -p1
-%patch2 -p1
-%patch3 -p1
-%patch4 -p1
-%patch5 -p1
-%patch6 -p1
-%patch7 -p1
 
 
 %build
@@ -144,49 +135,123 @@ fi
 
 
 %changelog
-* Thu Mar 15 2018 William Poteat <wpoteat@redhat.com> 0.19-9
-- 1530132: Do not replace /etc/virt-who.conf on rpm upgrade
+* Tue Feb 06 2018 Christopher Snyder <csnyder@redhat.com> 0.21.5-1
+- 1492074: Enable login to ESX using password with UTF-8 string
+  (jhnidek@redhat.com)
+
+* Tue Jan 30 2018 Christopher Snyder <csnyder@redhat.com> 0.21.4-1
+- 1353119: Add JSON-RPC support for VDSM (khowell@redhat.com)
+- 1509597: Enable to use virt-who with VDSM again (jhnidek@redhat.com)
+
+* Mon Jan 08 2018 Christopher Snyder <csnyder@redhat.com> 0.21.3-1
+- 1523548: Options log_dir and log_file are not ignored (jhnidek@redhat.com)
+
+* Thu Dec 07 2017 Christopher Snyder <csnyder@redhat.com> 0.21.2-1
+- 1510310: Ensure that owner and env are required where necessary
+  (csnyder@redhat.com)
+- 1512778: ESX should require username, password, and server values
   (csnyder@redhat.com)
 
-* Mon Feb 05 2018 Kevin Howell <khowell@redhat.com> 0.19-8
-- 1540296: Add JSON-RPC support for VDSM (khowell@redhat.com)
+* Tue Nov 28 2017 Kevin Howell <khowell@redhat.com> 0.21.1-1
+- 1511308: Only ESX supports: exclude_host_parents and filter_host_parents.
+  (jhnidek@redhat.com)
+- 1509596: Use qemu+ssh transport if not provided (libvirt)
+  (csnyder@redhat.com)
+- 1511308: Xen and Hyper-V do not support some filter options
+  (jhnidek@redhat.com)
+- 1510760: Ensure virt-who exits properly (w/ no good conf)
+  (csnyder@redhat.com)
+- 1509606: Remove duplicate output of validation messages (csnyder@redhat.com)
+- 1509597: Fix issue with cli consistancy check for vdsm (csnyder@redhat.com)
+- 1509595: Only expect owner on HostGuestAssociationReports
+  (csnyder@redhat.com)
 
-* Wed Oct 25 2017 Christopher Snyder <csnyder@redhat.com> 0.19-7
-- 1506263: Updates to the job polling frequency (csnyder@redhat.com)
+* Mon Oct 30 2017 Christopher Snyder <csnyder@redhat.com> 0.21.0-1
+- Update hypervisorCheckInAsync test for new config sections
+  (csnyder@redhat.com)
+- Update Config Refactor with changes from master (csnyder@redhat.com)
+- Removed usage of old Config (not unit tests) (jhnidek@redhat.com)
+- Further clean up of unit tests (jhnidek@redhat.com)
+- Create Xen Config Subclass (jhnidek@redhat.com)
+- Create Rhevm Config Subclass (jhnidek@redhat.com)
+- Create VDSM config subclass (wpoteat@redhat.com)
+- Clean up ConfigSection Unit tests (jhnidek@redhat.com)
+- Adds FakeVirtConfigSection (csnyder@redhat.com)
+- Configuration subclass for hyperv (wpoteat@redhat.com)
+- Implement EsxConfigSection (khowell@redhat.com)
+- Libvirtd ConfigSection Subclass (jhnidek@redhat.com)
+- Adds EffectiveConfig, ConfigSection (csnyder@redhat.com)
+- Adds warning message for deprecated env vars (csnyder@redhat.com)
+- 1503700: Updates to the job polling frequency (csnyder@redhat.com)
+- 1502821: Remove undocumented, broken env var "VIRTWHO_DISABLE_ASYNC"
+  (csnyder@redhat.com)
+- 1466015: Warn of deprecation of command line options in next release
+  (wpoteat@redhat.com)
+- remove non-existant variable fake_is_hypervisor (adarshvritant@gmail.com)
+- 1485865: Do not replace /etc/virt-who.conf on rpm upgrade
+  (csnyder@redhat.com)
+- Utilize the owner from the first report seen, if we do not know the owner
+  (csnyder@redhat.com)
+- Updates based on review (use str.format) (csnyder@redhat.com)
+- Fix example fake config in man docs (adarshvritant@gmail.com)
+- Add m2crypto dependency (adarshvritant@gmail.com)
+- 1211435: Don't send host-to-geust mapping, when env, owner are wrong
+  (jhnidek@redhat.com)
+- 1408556: Log which owner updated mappings are being sent to
+  (csnyder@redhat.com)
 
-* Fri Jul 21 2017 Christopher Snyder <csnyder@redhat.com> 0.19-6
+* Wed Jul 26 2017 Christopher Snyder <csnyder@redhat.com> 0.20.4-1
+- Point Source0 to GitHub (csnyder@redhat.com)
+
+* Thu Jul 13 2017 Christopher Snyder <csnyder@redhat.com> 0.20.2-1
+- 1458184: better reading of environment variables (jhnidek@redhat.com)
+- 1401867: Enable logging of rhsm module to rhsm.log (jhnidek@redhat.com)
+- 1404117: Check parameter consistency and refactoring (jhnidek@redhat.com)
+- Adds a patch number to virt-who versioning (csnyder@redhat.com)
+- 1401420: xen supports only uuid/hostname as hypervisor_id
+  (jhnidek@redhat.com)
 - 1458674: Update use of result data to match the new async api
   (csnyder@redhat.com)
-
-* Wed May 17 2017 Kevin Howell <khowell@redhat.com> 0.19-5
-- 1448267: Fix polling behavior for oneshot, CTRL-C, 429 responses
+- 1452436: virt-who prints host-to-quest mapping everytime (jhnidek@redhat.com)
+- 1357761: Do not check passwords to be in latin1 encoding (jhnidek@redhat.com)
+- 1457101: Continue running despite malformed configs (csnyder@redhat.com)
+- 1409984: Retry initial report retrieval on connection timeout
   (csnyder@redhat.com)
+
+* Fri Jun 09 2017 Christopher Snyder <csnyder@redhat.com> 0.20-1
+- 1389729: Add missing xml section for test (fran@caosdigital.com)
+- 1389729: virt-who incorrectly reports 'name' instead of 'hostname' for RHEV
+  hosts (fran@caosdigital.com)
 - 1450747: Continue running destination threads on internal failure
   (csnyder@redhat.com)
 - 1444718: Log name of config when duplicate reports are retrieved
   (csnyder@redhat.com)
 - 1447264: Keep running on InvalidPasswordFormat given other valid configs
   (csnyder@redhat.com)
+- 1448267: Fix polling behavior for oneshot, CTRL-C, 429 responses
+  (csnyder@redhat.com)
 - 1369107: Update docs and log messages to show the *.conf requirement
   (csnyder@redhat.com)
-
-* Mon Apr 24 2017 Kevin Howell <khowell@redhat.com> 0.19-4
 - 1436517: Fix api base detection for rhevm version 3 and 4
   (csnyder@redhat.com)
 - 1442337: Send updates immediately the first run (csnyder@redhat.com)
-
-* Wed Apr 12 2017 Kevin Howell <khowell@redhat.com> 0.19-3
 - Do not join threads not started, fix up fake backend (csnyder@redhat.com)
 - 1439317: Ensure reports are still sent despite duplicate configurations
   (csnyder@redhat.com)
-- 1436811: Send reports on the interval per destination (csnyder@redhat.com)
+- DestinationThreads now send all reports (csnyder@redhat.com)
+- Adds IntervalThread base class and refactors Virt classes
+  (csnyder@redhat.com)
+- Remove reference to nonexistant method _set_option (csnyder@redhat.com)
+- Update ConfigManager to produce destination and source mappings.
+  (csnyder@redhat.com)
+- Implemements a threadsafe datastore (csnyder@redhat.com)
+- Move from using processes to threads (csnyder@redhat.com)
 - 1436517: Set Version header for version detect (pcreech@redhat.com)
-
-* Wed Mar 29 2017 Kevin Howell <khowell@redhat.com> 0.19-2
-- 1437229: Fix syntax error in exception handling (pcreech@redhat.com)
+- 1403640: Fix syntax error in exception handling (pcreech@redhat.com)
 - Update the spec file for builds on more downstream platforms
   (csnyder@redhat.com)
-- 1437228: Handle utf-8 within Xmlrpc transport (pcreech@redhat.com)
+- Add releaser for rhel-7.4 (khowell@redhat.com)
+- 1391512: Handle utf-8 within Xmlrpc transport (pcreech@redhat.com)
 
 * Thu Mar 02 2017 Christopher Snyder <csnyder@redhat.com> 0.19-1
 - 1415497: Support rhev4 auto detection and usage (pcreech@redhat.com)

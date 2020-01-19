@@ -25,7 +25,7 @@ import shutil
 
 from base import TestBase
 
-from virtwho.config import ConfigManager
+from virtwho.config import DestinationToSourceMapper, init_config
 from virtwho.virt import Virt, Hypervisor, VirtError
 from virtwho.virt.fakevirt import FakeVirt
 
@@ -86,12 +86,14 @@ class TestFakeRead(TestBase):
 [test]
 type=fake
 is_hypervisor=true
+owner=taylor
+env=swift
 file=%s
 """ % self.hypervisor_file)
-
-        manager = ConfigManager(self.logger, self.config_dir)
+        effective_config = init_config({}, {}, config_dir=self.config_dir)
+        manager = DestinationToSourceMapper(effective_config)
         self.assertEquals(len(manager.configs), 1)
-        virt = Virt.fromConfig(self.logger, manager.configs[0])
+        virt = Virt.from_config(self.logger, manager.configs[0][1], None)
         self.assertEquals(type(virt), FakeVirt)
         mapping = virt.getHostGuestMapping()
         self.assertTrue("hypervisors" in mapping)
@@ -114,14 +116,15 @@ file=%s
 [test]
 type=fake
 is_hypervisor=true
+owner=covfefe
+env=covfefe
 file=%s
 """ % self.hypervisor_file)
-
-        manager = ConfigManager(self.logger, self.config_dir)
-        self.assertEquals(len(manager.configs), 1)
-        virt = Virt.fromConfig(self.logger, manager.configs[0])
-        self.assertEquals(type(virt), FakeVirt)
-        self.assertRaises(VirtError, virt.getHostGuestMapping)
+        effective_config = init_config({}, {}, config_dir=self.config_dir)
+        manager = DestinationToSourceMapper(effective_config)
+        # The 'test' section is not valid here (as the json provided will not work with
+        # the is_hypervisor value set to true)
+        self.assertNotIn('test', effective_config)
 
     def test_read_non_hypervisor(self):
         with open(self.hypervisor_file, "w") as f:
@@ -135,9 +138,10 @@ is_hypervisor=false
 file=%s
 """ % self.hypervisor_file)
 
-        manager = ConfigManager(self.logger, self.config_dir)
+        effective_config = init_config({}, {}, config_dir=self.config_dir)
+        manager = DestinationToSourceMapper(effective_config)
         self.assertEquals(len(manager.configs), 1)
-        virt = Virt.fromConfig(self.logger, manager.configs[0])
+        virt = Virt.from_config(self.logger, manager.configs[0][1], None)
         self.assertEquals(type(virt), FakeVirt)
         guests = virt.listDomains()
         self.assertEquals(len(guests), 1)
@@ -157,8 +161,6 @@ is_hypervisor=false
 file=%s
 """ % self.hypervisor_file)
 
-        manager = ConfigManager(self.logger, self.config_dir)
-        self.assertEquals(len(manager.configs), 1)
-        virt = Virt.fromConfig(self.logger, manager.configs[0])
-        self.assertEquals(type(virt), FakeVirt)
-        self.assertRaises(VirtError, virt.listDomains)
+        effective_config = init_config({}, {}, config_dir=self.config_dir)
+        # This is an invalid case, the config section that is invalid should have been dropped
+        self.assertNotIn('test', effective_config)

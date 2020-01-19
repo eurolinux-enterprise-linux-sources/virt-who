@@ -21,27 +21,128 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 import os
 import urllib2
 from mock import patch, call, ANY
-from multiprocessing import Queue, Event
+from threading import Event
+from Queue import Queue
 
 from base import TestBase
 from proxy import Proxy
 
-from virtwho.config import Config
-from virtwho.virt.xen import Xen
+from virtwho.virt.xen.xen import XenConfigSection
 from virtwho.virt.xen.XenAPI import NewMaster, Failure
-from virtwho.virt import VirtError, Guest, Hypervisor
+from virtwho.virt import Virt, VirtError, Guest, Hypervisor
+from virtwho.datastore import Datastore
+from virtwho import DefaultInterval
+
+
+MY_SECTION_NAME = 'test-xen'
+
+# Values used for testing XenConfigSection
+XEN_SECTION_VALUES = {
+    'type': 'xen',
+    'server': 'https://10.0.0.101',
+    'username': 'root',
+    'password': 'secret_password',
+    'env': '123456',
+    'owner': '123456',
+    'hypervisor_id': 'uuid',
+    'is_hypervisor': 'true'
+}
+
+
+class TestXenConfigSection(TestBase):
+    """
+    Test base for testing class LibvirtdConfigSection
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(TestXenConfigSection, self).__init__(*args, **kwargs)
+        self.xen_config = None
+
+    def init_virt_config_section(self):
+        """
+        Method executed before each unit test
+        """
+        self.xen_config = XenConfigSection(MY_SECTION_NAME, None)
+        # We need to set values using this way, because we need
+        # to trigger __setitem__ of virt_config
+        for key, value in XEN_SECTION_VALUES.items():
+            self.xen_config[key] = value
+
+    def test_validate_xen_section(self):
+        """
+        Test validation of xen section
+        """
+        self.init_virt_config_section()
+        result = self.xen_config.validate()
+        self.assertEqual(len(result), 0)
+
+    def test_validate_xen_section_incomplete_server_url(self):
+        """
+        Test validation of xen section. Incomplete server URL (missing https://)
+        """
+        self.init_virt_config_section()
+        self.xen_config['server'] = '10.0.0.101'
+        result = self.xen_config.validate()
+        expected_result = [
+            (
+                'info',
+                'The original server URL was incomplete. It has been enhanced to https://10.0.0.101'
+            )
+        ]
+        self.assertEqual(expected_result, result)
+
+    def test_validate_xen_section_missing_username_password(self):
+        """
+        Test validation of xen section. Username and password is required.
+        """
+        self.init_virt_config_section()
+        del self.xen_config['username']
+        del self.xen_config['password']
+        result = self.xen_config.validate()
+        expected_result = [
+            ('error', 'Required option: "username" not set.'),
+            ('error', 'Required option: "password" not set.')
+        ]
+        self.assertEqual(expected_result, result)
+
+    def test_validate_xen_section_unsupported_filters(self):
+        """
+        Test validation of xen section. Filters: filter_host_parents and exclude_host_parents
+        are not supported on Xen mode. It is supported only on ESX mode.
+        """
+        self.init_virt_config_section()
+        # Supported filter
+        self.xen_config['filter_hosts'] = '*.company.com, *.company.net'
+        # Unsupported filters
+        self.xen_config['filter_host_parents'] = 'host_parents'
+        self.xen_config['exclude_host_parents'] = 'host_parents'
+        result = self.xen_config.validate()
+        print(result)
+        expected_result = [
+            ('warning', 'Ignoring unknown configuration option "filter_host_parents"'),
+            ('warning', 'Ignoring unknown configuration option "exclude_host_parents"')
+        ]
+        self.assertEqual(expected_result, result)
 
 
 class TestXen(TestBase):
+
+    @staticmethod
+    def create_config(name, wrapper, **kwargs):
+        config = XenConfigSection(name, wrapper)
+        config.update(**kwargs)
+        config.validate()
+        return config
+
     def setUp(self):
-        config = Config('test', 'xen', server='localhost', username='username',
+        config = self.create_config(name='test', wrapper=None, type='xen', server='localhost', username='username',
                         password='password', owner='owner', env='env')
-        self.xen = Xen(self.logger, config)
+        self.xen = Virt.from_config(self.logger, config, Datastore(), interval=DefaultInterval)
 
     def run_once(self, queue=None):
-        ''' Run XEN in oneshot mode '''
+        """Run XEN in oneshot mode"""
         self.xen._oneshot = True
-        self.xen._queue = queue or Queue()
+        self.xen.dest = queue or Queue()
         self.xen._terminate_event = Event()
         self.xen._oneshot = True
         self.xen._interval = 0
@@ -118,7 +219,7 @@ class TestXen(TestBase):
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.xen,
+                    self.xen.CONFIG_TYPE,
                     expected_guest_state,
                 )
             ],
@@ -174,7 +275,7 @@ class TestXen(TestBase):
                 guestIds=[
                     Guest(
                         expected_guestId,
-                        self.xen,
+                        self.xen.CONFIG_TYPE,
                         expected_guest_state,
                     )
                 ],

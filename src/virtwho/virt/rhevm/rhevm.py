@@ -18,14 +18,13 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
-import sys
 import urlparse
 import requests
 from requests.auth import HTTPBasicAuth
 from xml.etree import ElementTree
 
 from virtwho import virt
-from virtwho.config import Config
+from virtwho.config import VirtConfigSection
 
 
 RHEVM_STATE_TO_GUEST_STATE = {
@@ -50,29 +49,69 @@ RHEVM_STATE_TO_GUEST_STATE = {
 }
 
 
-class RhevM(virt.Virt):
-    CONFIG_TYPE = "rhevm"
+class RhevmConfigSection(VirtConfigSection):
+    """
+    This class is used for validation of RHEVM virtualization backend
+    section. It tries to validate options and combination of options that
+    are specific for this virtualization backend.
+    """
 
-    def __init__(self, logger, config):
-        super(RhevM, self).__init__(logger, config)
-        self.url = self.config.server
-        if "//" not in self.url:
-            self.url = "//" + self.config.server
-        parsed = urlparse.urlsplit(self.url, "https")
+    VIRT_TYPE = 'rhevm'
+    HYPERVISOR_ID = ('uuid', 'hwuuid', 'hostname')
+
+    def __init__(self, section_name, wrapper, *args, **kwargs):
+        super(RhevmConfigSection, self).__init__(section_name, wrapper, *args, **kwargs)
+        self.add_key('server', validation_method=self._validate_server, required=True)
+        self.add_key('username', validation_method=self._validate_username, required=True)
+        self.add_key('password', validation_method=self._validate_unencrypted_password, required=True)
+
+    def _validate_server(self, key='server'):
+        """
+        Do validation of server option specific for this virtualization backend
+        return: Return None or info/warning/error
+        """
+        url = self._values[key]
+
+        if "//" not in url:
+            url = "//" + url
+        parsed = urlparse.urlsplit(url, "https")
         if ":" not in parsed[1]:
             netloc = parsed[1] + ":8443"
         else:
             netloc = parsed[1]
-        self.url = urlparse.urlunsplit((parsed[0], netloc, parsed[2], "", ""))
+        url = urlparse.urlunsplit((parsed[0], netloc, parsed[2], "", ""))
 
-        if self.url[-1] != '/':
-            self.url += '/'
+        if url[-1] != '/':
+            url += '/'
 
-        self.username = self.config.username
-        self.password = self.config.password
+        if url != self._values[key]:
+            self._values[key] = url
+            return [(
+                    'info',
+                    "The original server URL was incomplete. It has been enhanced to %s" % url
+                )]
+        else:
+            return None
 
-        self.auth = HTTPBasicAuth(self.config.username, self.config.password)
+
+class RhevM(virt.Virt):
+    CONFIG_TYPE = "rhevm"
+
+    def __init__(self, logger, config, dest, terminate_event=None,
+                 interval=None, oneshot=False):
+        super(RhevM, self).__init__(logger, config, dest,
+                                    terminate_event=terminate_event,
+                                    interval=interval,
+                                    oneshot=oneshot)
+        self.url = self.config['server']
+        self.api_base = 'api'
+        self.username = self.config['username']
+        self.password = self.config['password']
+        self.auth = HTTPBasicAuth(self.config['username'], self.config['password'])
         self.prepared = False
+        self.clusters_url = None
+        self.hosts_url = None
+        self.vms_url = None
 
     def prepare(self):
         if not self.prepared:
@@ -85,30 +124,31 @@ class RhevM(virt.Virt):
         """
         Builds the URL's based on Rhev version
         """
-        clusters_endpoint = 'clusters'
-        hosts_endpoint = 'hosts'
-        vms_endpoint = 'vms'
+        clusters_endpoint = '/clusters'
+        hosts_endpoint = '/hosts'
+        vms_endpoint = '/vms'
 
-        if self.major_version == "4":
-            api_base = 'ovirt-engine/api/'
-        else:
-            api_base = 'api/'
-
-        self.clusters_url = urlparse.urljoin(self.url, api_base + clusters_endpoint)
-        self.hosts_url = urlparse.urljoin(self.url, api_base + hosts_endpoint)
-        self.vms_url = urlparse.urljoin(self.url, api_base + vms_endpoint)
+        self.clusters_url = urlparse.urljoin(self.url, self.api_base + clusters_endpoint)
+        self.hosts_url = urlparse.urljoin(self.url, self.api_base + hosts_endpoint)
+        self.vms_url = urlparse.urljoin(self.url, self.api_base + vms_endpoint)
 
     def get_version(self):
         """
         Gets the major version from the Rhevm server
         """
         try:
-            response = requests.get(urlparse.urljoin(self.url, 'api'),
+            headers = dict()
+            headers['Version'] = '3'
+            # We will store the api_base that seems to work and use that for future requests
+            response = requests.get(urlparse.urljoin(self.url, self.api_base),
                                     auth=self.auth,
+                                    headers=headers,
                                     verify=False)
-            if response.status_code == 404 and 'ovirt-engine' not in self.url:
-                response = requests.get(urlparse.urljoin(self.url, 'ovirt-engine/api'),
+            if response.status_code == 404:
+                self.api_base = 'ovirt-engine/api'
+                response = requests.get(urlparse.urljoin(self.url, self.api_base),
                                         auth=self.auth,
+                                        headers=headers,
                                         verify=False)
             response.raise_for_status()
         except requests.RequestException as e:
@@ -193,24 +233,23 @@ class RhevM(virt.Virt):
                 self.logger.debug('Cluster of host %s is not virt_service, skipped', id)
                 continue
 
-            if self.config.hypervisor_id == 'uuid':
+            if self.config['hypervisor_id'] == 'uuid':
                 host_id = id
-            elif self.config.hypervisor_id == 'hwuuid':
+            elif self.config['hypervisor_id'] == 'hwuuid':
                 try:
                     host_id = host.find('hardware_information').find('uuid').text
                 except AttributeError:
                     self.logger.warn("Host %s doesn't have hardware uuid", id)
                     continue
-            elif self.config.hypervisor_id == 'hostname':
-                host_id = host.find('name').text
-            else:
-                raise virt.VirtError(
-                    'Invalid option %s for hypervisor_id, use one of: uuid, hwuuid, or hostname' %
-                    self.config.hypervisor_id)
+            elif self.config['hypervisor_id'] == 'hostname':
+                host_id = host.find('address').text
 
             sockets = host.find('cpu').find('topology').get('sockets')
             if not sockets:
-                sockets = host.find('cpu').find('topology').find('sockets').text
+                try:
+                    sockets = host.find('cpu').find('topology').find('sockets').text
+                except AttributeError:
+                    sockets = "unknown"
 
             facts = {
                 virt.Hypervisor.CPU_SOCKET_FACT: sockets,
@@ -223,7 +262,7 @@ class RhevM(virt.Virt):
             except AttributeError:
                 pass
 
-            hosts[id] = virt.Hypervisor(hypervisorId=host_id, name=host.find('name').text, facts=facts)
+            hosts[id] = virt.Hypervisor(hypervisorId=host_id, name=host.find('address').text, facts=facts)
             mapping[id] = []
         for vm in vms_xml.findall('vm'):
             guest_id = vm.get('id')
@@ -253,22 +292,10 @@ class RhevM(virt.Virt):
                     guest_id)
                 state = virt.Guest.STATE_UNKNOWN
 
-            hosts[host_id].guestIds.append(virt.Guest(guest_id, self, state))
+            hosts[host_id].guestIds.append(virt.Guest(guest_id, self.CONFIG_TYPE, state))
 
         return {'hypervisors': hosts.values()}
 
     def ping(self):
         return True
 
-if __name__ == '__main__':  # pragma: no cover
-    # TODO: read from config
-    if len(sys.argv) < 4:
-        print("Usage: %s url username password" % sys.argv[0])
-        sys.exit(0)
-
-    import logging
-    logger = logging.Logger("")
-    config = Config('rhevm', 'rhevm', server=sys.argv[1], username=sys.argv[2],
-                    password=sys.argv[3])
-    rhevm = RhevM(logger, config)
-    print dict((host, [guest.toDict() for guest in guests]) for host, guests in rhevm.getHostGuestMapping().items())
