@@ -1,0 +1,12 @@
+#compdef virt-who
+
+local exargs="-h --help"
+
+_arguments -s -w \
+  '(- *)'{-h,--help}'[print help information and exit]' \
+  "(-d --debug $exargs)"{-d,--debug}'[enable debugging output]' \
+  "(-o --one-shot -i --interval -p --print $exargs)"{-o,--one-shot}'[one-shot mode]' \
+  "(-i --interval -o --one-shot -p --print $exargs)"{-i+,--interval}'[specify reporting interval]:interval:' \
+  "(-p --print -o --one-shot -i --interval $exargs)"{-p,--print}'[print host/guest information]' \
+  "($exargs)"\*{-c+,--config}'[specify configuration file]:file:_files' \
+  && return 0

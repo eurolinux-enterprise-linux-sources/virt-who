@@ -1,0 +1,72 @@
+.TH VIRT-WHO "8" "April 2016" "virt-who"
+.SH NAME
+virt-who - Agent for reporting virtual guest IDs to Subscription Asset Manager, Satellite 6, or Satellite 5.
+.SH SYNOPSIS
+virt-who [-d] [-i INTERVAL] [-o] 
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+show this help message and exit
+.TP
+\fB\-d\fR, \fB\-\-debug\fR
+Enable debugging output
+.TP
+\fB\-o\fR, \fB\-\-one\-shot\fR
+Send the list of guest IDs and exit immediately
+.TP
+\fB\-i\fR INTERVAL, \fB\-\-interval\fR=\fIINTERVAL\fR
+Acquire and send guest information each N seconds; note that this option is recommendation only, requested interval might not been honoured and the actual interval might be longer or shorter depending on backend that is used.
+.TP
+\fB\-p\fR, \fB\-\-print\fR
+Print the host/guests association in JSON format to standard output
+.TP
+\fB\-c\fR, \fB\-\-config\fR
+Use configuration file directly (will override configuration from other files. 'global' and 'default' sections are not read in files passed in via this option, and are only read from /etc/virt-who.conf). Can be used multiple times. See virt-who-config(5) for details about configuration file format.
+.IP
+
+.SH ENVIRONMENT
+virt-who also reads environmental variables. They have the same name as command line arguments but upper-cased, with underscore instead of dash and prefixed with VIRTWHO_ (e.g. VIRTWHO_ONE_SHOT). Empty variables are considered as disabled, non-empty as enabled
+.SH USAGE
+.SS MODE
+virt-who has three modes how it can run:
+.TP
+1. one-shot mode
+# virt-who -o
+
+In this mode virt-who just sends the host to guest association to the server once and then exits.
+.TP
+2. interval mode
+# virt-who -i INTERVAL
+
+This is default mode. virt-who will listen to change events (if available) or do a polling with given interval, and will send the host to guest association when it changes. The default polling interval is 60 seconds and can be changed using "-i INTERVAL" (in seconds).
+.TP
+3. print mode
+# virt-who -p
+
+This mode is similar to oneshot mode but the host to guest association is not send to server, but printed to standard output instead.
+
+.SH LOGGING
+virt-who always writes error output to file /var/log/rhsm/rhsm.log. It also writes the same output to standard error output when started from command line.
+
+virt-who can be started with option "-d" in all modes and with all backends. This option will enable verbose output with more information.
+
+.SH SECURITY
+
+Virt-who may present security concerns in some scenarios because it needs access to every hypervisor in the environment. To minimize security risk, virt-who is a network client, not a server. It only does outbound connections to find and register new hypervisors and does not need access to any virtual machines. To further reduce risk, deploy virt-who in a small virtual machine with a minimal installation and lock it down from any unsolicited inbound network connections.
+
+Here is a list of ports that need to be open for different hypervisors:
+
+    VMWare ESX/vCenter: 443/tcp
+    Hyper-V: 5985/tcp
+    RHEV-M: 443/tcp or 8443/tcp (depending on version)
+    XenServer: 443/tcp
+    libvirt: depending on transport type, default (for remote connections) is qemu over ssh on port 22
+    local libvirt and vdsm use local connections and don't need open ports
+    kubevirt: 8443/tcp
+
+virt-who also needs to have access to Subscription Asset Manager, Satellite 5, or Satellite 6. Default port is 443/tcp. All the ports might be changed by system administrators.
+
+Using the same network for machine running virt-who as for hypervisor management software instead of production VM networks is suggested.
+
+.SH AUTHOR
+Radek Novacek <rnovacek at redhat dot com>
