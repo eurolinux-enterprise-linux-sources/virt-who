@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function, absolute_import
 """
 Module for communcating with Hyper-V, part of virt-who
 
@@ -22,7 +20,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import sys
 import re
-from six.moves import urllib
+import urlparse
 import base64
 import struct
 from xml.etree import ElementTree
@@ -30,8 +28,7 @@ from requests.auth import AuthBase
 import requests
 
 from virtwho import virt
-from . import ntlm
-from virtwho.config import VirtConfigSection
+import ntlm
 
 try:
     from uuid import uuid1
@@ -41,61 +38,6 @@ except ImportError:
     def uuid1():
         # fallback to calling commandline uuidgen
         return subprocess.Popen(["uuidgen"], stdout=subprocess.PIPE).communicate()[0].strip()
-
-
-class HypervConfigSection(VirtConfigSection):
-    """
-    This class is used for validation of Hyper-V virtualization backend
-    section. It tries to validate options and combination of options that
-    are specific for this virtualization backend.
-    """
-
-    VIRT_TYPE = 'hyperv'
-    HYPERVISOR_ID = ('uuid', 'hostname')
-
-    def __init__(self, section_name, wrapper, *args, **kwargs):
-        super(HypervConfigSection, self).__init__(section_name, wrapper, *args, **kwargs)
-        self.add_key('server', validation_method=self._validate_server, required=True)
-        self.add_key('username', validation_method=self._validate_username, required=True)
-        self.add_key('password', validation_method=self._validate_unencrypted_password, required=True)
-
-    def _validate_server(self, key):
-        url_altered = False
-
-        result = []
-        if key not in self._values:
-            self._values[key] = ''
-        else:
-            url = self._values[key]
-
-            if "//" not in url:
-                url_altered = True
-                url = "//" + url
-            parsed = urllib.parse.urlsplit(url, "http")
-            if ":" not in parsed[1]:
-                url_altered = True
-                if parsed[0] == "https":
-                    self.host = parsed[1] + ":5986"
-                else:
-                    self.host = parsed[1] + ":5985"
-            else:
-                self.host = parsed[1]
-            if parsed[2] == "":
-                url_altered = True
-                path = "wsman"
-            else:
-                path = parsed[2]
-            self.url = urllib.parse.urlunsplit((parsed[0], self.host, path, "", ""))
-            self._values['url'] = self.url
-            if url_altered:
-                result.append((
-                    'info',
-                    "The original server URL was incomplete. It has been enhanced to %s" % self.url
-                ))
-        if len(result) == 0:
-            return None
-        else:
-            return result
 
 
 class HyperVAuth(AuthBase):
@@ -124,7 +66,7 @@ class HyperVAuth(AuthBase):
         request = self.prepare_resend(response)
 
         self.ntlm = ntlm.Ntlm()
-        negotiate = base64.b64encode(self.ntlm.negotiate_message(self.username)).decode('utf-8')
+        negotiate = base64.b64encode(self.ntlm.negotiate_message(self.username))
         request.headers["Authorization"] = "Negotiate %s" % negotiate
         r = response.connection.send(request, **kwargs)
         if r.status_code != 401:
@@ -142,7 +84,6 @@ class HyperVAuth(AuthBase):
             self.logger.warning("Wrong ntlm header: %s", auth_header)
 
         negotiate = base64.b64encode(self.ntlm.authentication_message(base64.b64decode(challenge), self.password))
-        negotiate = negotiate.decode('utf-8')
         request.headers["Authorization"] = "Negotiate %s" % negotiate
 
         # Encrypt body of original request and include it
@@ -165,24 +106,25 @@ class HyperVAuth(AuthBase):
         encrypted, signature = self.ntlm.encrypt(request.body)
 
         boundary = 'Encrypted Boundary'
-        body = '''--{boundary}\r
+        body = b'''--{boundary}\r
 Content-Type: application/HTTP-SPNEGO-session-encrypted\r
 OriginalContent: type={original};Length={length}\r
 --{boundary}\r
 Content-Type: application/octet-stream\r
+{header_len}{signature}{encrypted}--{boundary}--\r
 '''.format(
             original=request.headers["Content-Type"],
             length=len(encrypted),
+            header_len=struct.pack('<I', len(signature)),
+            signature=signature,
+            encrypted=encrypted,
             boundary=boundary)
-        header_len = struct.pack('<I', len(signature))
-        bin_body = body.encode('utf-8') + header_len + signature + encrypted
-        bin_body += '--{boundary}--\r\n'.format(boundary=boundary).encode('utf-8')
         request.headers["Content-Type"] = (
             'multipart/encrypted;'
             'protocol="application/HTTP-SPNEGO-session-encrypted";'
             'boundary="{boundary}"').format(boundary=boundary)
-        request.body = bin_body
-        request.headers["Content-Length"] = len(bin_body)
+        request.body = body
+        request.headers["Content-Length"] = len(body)
         return request
 
     def decrypt_response(self, response):
@@ -191,14 +133,13 @@ Content-Type: application/octet-stream\r
         if 'multipart/encrypted' not in content_type:
             # The response is not encrypted, just return it
             return response
-        data = response.raw.read(int(response.headers.get('Content-Length', 0))).decode('latin1')
+        data = response.raw.read(response.headers.get('Content-Length', 0))
         parts = re.split(r'-- ?Encrypted Boundary', data)
         try:
             body = parts[2].lstrip('\r\n').split('\r\n', 1)[1]
         except IndexError:
             self.logger.debug("Incorrect multipart data: %s", data)
             raise HyperVAuthFailed("Unable to decrypt sealed response: incorrect format")
-        body = body.encode('latin1')
         # First four bytes of body is signature length
         l = struct.unpack('<I', body[:4])[0]
         # Then there is signature with given length
@@ -216,7 +157,7 @@ Content-Type: application/octet-stream\r
         request = self.prepare_resend(response)
 
         passphrase = '%s:%s' % (self.username, self.password)
-        self.basic = 'Basic %s' % base64.b64encode(passphrase).decode('utf-8')
+        self.basic = 'Basic %s' % base64.b64encode(passphrase)
         request.headers['Authorization'] = self.basic
         request.headers['Content-Length'] = len(self._body)
         request.body = self._body
@@ -501,19 +442,34 @@ class HyperVCallFailed(HyperVException):
 class HyperV(virt.Virt):
     CONFIG_TYPE = "hyperv"
 
-    def __init__(self, logger, config, dest, terminate_event=None,
-                 interval=None, oneshot=False):
-        super(HyperV, self).__init__(logger, config, dest,
-                                     terminate_event=terminate_event,
-                                     interval=interval,
-                                     oneshot=oneshot)
-        self.url = config['url']
-        self.username = config['username']
-        self.password = config['password']
+    def __init__(self, logger, config):
+        super(HyperV, self).__init__(logger, config)
+        url = config.server
+        self.username = config.username
+        self.password = config.password
 
         # First try to use old API (root/virtualization namespace) if doesn't
         # work, go with root/virtualization/v2
         self.useNewApi = False
+
+        # Parse URL and create proper one
+        if "//" not in url:
+            url = "//" + url
+        parsed = urlparse.urlsplit(url, "http")
+        if ":" not in parsed[1]:
+            if parsed[0] == "https":
+                self.host = parsed[1] + ":5986"
+            else:
+                self.host = parsed[1] + ":5985"
+        else:
+            self.host = parsed[1]
+        if parsed[2] == "":
+            path = "wsman"
+        else:
+            path = parsed[2]
+        self.url = urlparse.urlunsplit((parsed[0], self.host, path, "", ""))
+
+        logger.debug("Hyper-V url: %s", self.url)
 
     def connect(self):
         s = requests.Session()
@@ -598,7 +554,7 @@ class HyperV(virt.Virt):
                 self.logger.warning("Unknown state for guest %s", elementName)
                 state = virt.Guest.STATE_UNKNOWN
 
-            guests.append(virt.Guest(HyperV.decodeWinUUID(uuid), self.CONFIG_TYPE, state))
+            guests.append(virt.Guest(HyperV.decodeWinUUID(uuid), self, state))
         # Get the hostname
         hostname = None
         socket_count = None
@@ -607,13 +563,17 @@ class HyperV(virt.Virt):
             hostname = instance["DNSHostName"]
             socket_count = instance["NumberOfProcessors"]
 
-        if self.config['hypervisor_id'] == 'uuid':
+        if self.config.hypervisor_id == 'uuid':
             uuid = hypervsoap.Enumerate("select UUID from Win32_ComputerSystemProduct", "root/cimv2")
             host = None
             for instance in hypervsoap.Pull(uuid, "root/cimv2"):
                 host = HyperV.decodeWinUUID(instance["UUID"])
-        elif self.config['hypervisor_id'] == 'hostname':
+        elif self.config.hypervisor_id == 'hostname':
             host = hostname
+        else:
+            raise virt.VirtError(
+                'Invalid option %s for hypervisor_id, use one of: uuid, or hostname' %
+                self.config.hypervisor_id)
         facts = {
             virt.Hypervisor.CPU_SOCKET_FACT: str(socket_count),
             virt.Hypervisor.HYPERVISOR_TYPE_FACT: 'hyperv',
@@ -624,3 +584,17 @@ class HyperV(virt.Virt):
 
     def ping(self):
         return True
+
+if __name__ == '__main__':  # pragma: no cover
+    if len(sys.argv) < 4:
+        print "Usage: %s url username password"
+        sys.exit(0)
+
+    import logging
+    logger = logging.Logger("virtwho.hyperv.main")
+    logger.addHandler(logging.StreamHandler())
+    from virtwho.config import Config
+    config = Config('test', 'hyperv', server=sys.argv[1], username=sys.argv[2],
+                    password=sys.argv[3])
+    hyperv = HyperV(logger, config)
+    print dict((host, [guest.toDict() for guest in guests]) for host, guests in hyperv.getHostGuestMapping().items())

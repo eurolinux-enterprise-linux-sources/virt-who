@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function, absolute_import
 import sys
 import logging
 import threading
@@ -14,7 +12,7 @@ def main():
     except KeyboardInterrupt:
         virtwho.main.exit(1)
     except Exception as e:
-        print(e, file=sys.stderr)
+        print >>sys.stderr, e
         import traceback
         traceback.print_exc(file=sys.stderr)
         logger = logging.getLogger("virtwho.main")
@@ -25,10 +23,12 @@ def main():
         logger.debug("virt-who terminated")
         virtwho.main.exit(res)
     finally:
+        # Work around multiprocessing not cleaning up after itself.
+        # http://bugs.python.org/issue4106
+        gc.collect()
         for x in threading.enumerate():
             if x.name == 'QueueFeederThread' and x.ident is not None:
                 x.join(1)
-
 
 if __name__ == '__main__':
     main()

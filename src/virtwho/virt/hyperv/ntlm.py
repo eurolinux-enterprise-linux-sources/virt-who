@@ -1,30 +1,10 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function
 
 import os
-import six
 import struct
 from socket import gethostname
 import hmac
 import hashlib
-
-if not six.PY3:
-    from M2Crypto.RC4 import RC4
-else:
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
-    from cryptography.hazmat.backends import default_backend
-
-    class RC4(object):
-        def __init__(self, key):
-            if isinstance(key, str):
-                key = key.encode('utf-8')
-            cipher = Cipher(algorithms.ARC4(key), mode=None, backend=default_backend())
-            self.encrypter = cipher.encryptor()
-
-        def update(self, message):
-            if isinstance(message, str):
-                message = message.encode('utf-8')
-            return self.encrypter.update(message)
+from M2Crypto.RC4 import RC4
 
 
 def rc4k(key, message):
@@ -40,8 +20,6 @@ def mac(handle, signing_key, seq_num, message):
     number `seq_num` and using key `signing_key`. The `handle` corresponds to
     current state of sealing key.
     '''
-    if not isinstance(message, six.binary_type):
-        message = message.encode('utf-8')
     hmac_md5 = hmac.new(signing_key, struct.pack('<I', seq_num) + message).digest()[:8]
     checksum = handle.update(hmac_md5)
     return struct.pack('<I8sI', 1, checksum[:8], seq_num)
@@ -61,11 +39,11 @@ def ntlm_compute_response(flags, response_key_nt, response_key_lm,
 
     Return tuple (nt_challenge_response, lm_challenge_response, session_base_key).
     '''
-    responser_version = b'\x01'
-    hi_responser_version = b'\x01'
+    responser_version = '\x01'
+    hi_responser_version = '\x01'
     temp = (
-        responser_version + hi_responser_version + b'\0' * 6 + time +
-        client_challenge + b'\0' * 4 + target_info + b'\0' * 4
+        responser_version + hi_responser_version + '\0' * 6 + time +
+        client_challenge + '\0' * 4 + target_info + '\0' * 4
     )
     nt_proof_str = hmac.new(response_key_nt, server_challenge + temp).digest()
     nt_challenge_response = nt_proof_str + temp
@@ -89,10 +67,10 @@ class NtlmError(Exception):
 
 
 # Session keys for NTLM
-SESSION_C2S_SEAL = b'session key to client-to-server sealing key magic constant\x00'
-SESSION_S2C_SEAL = b'session key to server-to-client sealing key magic constant\x00'
-SESSION_C2S_SIGN = b'session key to client-to-server signing key magic constant\x00'
-SESSION_S2C_SIGN = b'session key to server-to-client signing key magic constant\x00'
+SESSION_C2S_SEAL = 'session key to client-to-server sealing key magic constant\x00'
+SESSION_S2C_SEAL = 'session key to server-to-client sealing key magic constant\x00'
+SESSION_C2S_SIGN = 'session key to client-to-server signing key magic constant\x00'
+SESSION_S2C_SIGN = 'session key to server-to-client signing key magic constant\x00'
 
 # NTLM Flags
 NTLM_NegotiateUnicode = 0x00000001
@@ -144,7 +122,7 @@ class Message(object):
     ]
 
     DEFAULTS = {
-        'signature': b'NTLMSSP\0',
+        'signature': 'NTLMSSP\0',
         'product_major_version': 5,
         'product_minor_version': 1,
         'product_build': 2600,
@@ -189,13 +167,8 @@ class OutgoingMessage(Message):
             item = self.params.get(name)
             if item is None:
                 item = self.DEFAULTS[name]
-            if 's' in signature and isinstance(item, str):
-                item = item.encode('utf-8')
             message.append(struct.pack(signature, item))
-        res = message[0]
-        for item in message[1:]:
-            res += item
-        return res
+        return ''.join(message)
 
     @property
     def data(self):
@@ -239,8 +212,8 @@ class NegotiateMessage(OutgoingMessage):
     })
 
     def __init__(self, domain, workstation, flags=None):
-        self.domain = domain if not six.PY3 else domain.encode('ascii')
-        self.workstation = workstation if not six.PY3 else workstation.encode('ascii')
+        self.domain = domain
+        self.workstation = workstation
         self.flags = flags
 
     def _format(self):
@@ -286,7 +259,7 @@ class ChallengeMessage(IncomingMessage):
 
     def _parse(self, message):
         IncomingMessage._parse(self, message)
-        assert self._items['signature'] == b'NTLMSSP\x00'
+        assert self._items['signature'] == 'NTLMSSP\x00'
         assert self._items['message_type'] == 2
         self._items['target_name'] = message[
             self._items['target_name_buffer_offset']:
@@ -374,7 +347,7 @@ class AuthenticationMessage(OutgoingMessage):
         '''
         Compute data that are needed for authentication and encryption.
         '''
-        time = self.time or b'\0' * 8
+        time = self.time or '\0' * 8
 
         response_key_nt = response_key_lm = ntowfv2(self.password, self.username, self.domain)
         self.nt_challenge_response, self.lm_challenge_response, session_base_key = ntlm_compute_response(
@@ -383,7 +356,7 @@ class AuthenticationMessage(OutgoingMessage):
 
         if self.time:
             # Send NULLs instead of lm_challenge_response if we have time from server
-            self.lm_challenge_response = b'\0' * 24
+            self.lm_challenge_response = '\0' * 24
 
         key_exchange_key = session_base_key  # key_exchange_key is always session_base_key in NTLMv2
         if self.negotiate_flags & NTLM_NegotiateKeyExchange:
@@ -413,7 +386,7 @@ class AuthenticationMessage(OutgoingMessage):
             offset += 2
             av_len = struct.unpack_from('<H', target_info, offset)[0]
             offset += 2
-            if av_id == 0x0007:  # Timestamp
+            if av_id == '0x0007':  # Timestamp
                 timestamp = target_info[offset:offset + av_len]
             offset += av_len
         return timestamp
@@ -437,7 +410,7 @@ class AuthenticationMessage(OutgoingMessage):
 
         encrypted_random_session_key_len = len(self.encrypted_random_session_key)
         encrypted_random_session_key_offset = nt_challenge_response_offset + nt_challenge_response_len
-        mic = b'\0' * 16
+        mic = '\0' * 16
 
         flags = self.DEFAULTS['negotiate_flags']
         self.params = {
@@ -492,8 +465,7 @@ class Ntlm(object):
             self.domain = ''
             self.username = username
         self.workstation = gethostname().upper()
-        data = NegotiateMessage(self.domain, self.workstation).data
-        return data
+        return NegotiateMessage(self.domain, self.workstation).data
 
     def authentication_message(self, challenge, password):
         '''
@@ -527,7 +499,7 @@ class Ntlm(object):
 
     def encrypt(self, message):
         '''
-        Encrypt and sign given `message` and return pair
+        Encrypt and sign given `meesage` and return pair
         (encrypted_message, signature).
         '''
         sealed_message = self.outgoing_seal_handle.update(message)

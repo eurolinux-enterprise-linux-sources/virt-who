@@ -1,0 +1,36 @@
+diff --git a/rel-eng/packages/virt-who b/rel-eng/packages/virt-who
+index 9cda1b3..a775210 100644
+--- a/rel-eng/packages/virt-who
++++ b/rel-eng/packages/virt-who
+@@ -1 +1 @@
+-0.19-8 ./
++0.19-9 ./
+diff --git a/virt-who.spec b/virt-who.spec
+index bf6c99d..c22bc71 100644
+--- a/virt-who.spec
++++ b/virt-who.spec
+@@ -6,7 +6,7 @@
+ 
+ Name:           virt-who
+ Version:        0.19
+-Release:        8%{?dist}
++Release:        9%{?dist}
+ Summary:        Agent for reporting virtual guest IDs to subscription-manager
+ 
+ Group:          System Environment/Base
+@@ -124,10 +124,14 @@ fi
+ %ghost %{_sharedstatedir}/%{name}/key
+ %{_datadir}/zsh/site-functions/_virt-who
+ %{_sysconfdir}/virt-who.d/template.conf
+-%{_sysconfdir}/virt-who.conf
++%attr(600, root, root) %config(noreplace) %{_sysconfdir}/virt-who.conf
+ 
+ 
+ %changelog
++* Thu Mar 15 2018 William Poteat <wpoteat@redhat.com> 0.19-9
++- 1530132: Do not replace /etc/virt-who.conf on rpm upgrade
++  (csnyder@redhat.com)
++
+ * Mon Feb 05 2018 Kevin Howell <khowell@redhat.com> 0.19-8
+ - 1540296: Add JSON-RPC support for VDSM (khowell@redhat.com)
+ 

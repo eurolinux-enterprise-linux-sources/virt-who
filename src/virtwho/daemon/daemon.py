@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import print_function
 
 # daemon/daemon.py
 # Part of python-daemon, an implementation of PEP 3143.
@@ -25,7 +24,6 @@ import resource
 import errno
 import signal
 import socket
-import six
 import atexit
 
 
@@ -441,7 +439,7 @@ class DaemonContext(object):
             """
         if target is None:
             result = signal.SIG_IGN
-        elif isinstance(target, six.string_types):
+        elif isinstance(target, basestring):
             name = target
             result = getattr(self, name)
         else:

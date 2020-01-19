@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function
 """
 Module for logging, part of virt-who
 
@@ -24,11 +22,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 import logging
 import logging.handlers
 import traceback
+import cStringIO
 import os
 import sys
 import json
-from six import StringIO
-from six.moves.queue import Empty, Queue
+from Queue import Empty
+from multiprocessing import Queue
 from threading import Thread
 
 from virtwho import util
@@ -66,7 +65,7 @@ class QueueHandler(logging.Handler):
         if self.level != logging.DEBUG:
             s = traceback.format_exception_only(ei[0], ei[1])[0]
         else:
-            sio = StringIO()
+            sio = cStringIO.StringIO()
             traceback.print_exception(ei[0], ei[1], ei[2], None, sio)
             s = sio.getvalue()
             sio.close()
@@ -111,8 +110,9 @@ class QueueLogger(object):
 
     @staticmethod
     def _log(logger, queue):
-        want_exit = False
-        while not want_exit:
+        exit = False
+        while not exit:
+            record = None
             try:
                 record = queue.get()
             except Empty:
@@ -122,7 +122,7 @@ class QueueLogger(object):
                 if to_log:
                     logger.handle(to_log)
             else:
-                want_exit = True
+                exit = True
 
     def start_logging(self):
         self._logging_thread.start()
@@ -169,97 +169,87 @@ class Logger(object):
     _logs = {}
     _stream_handler = None
     _journal_handler = None
-    _rhsm_file_handler = None
     _level = logging.DEBUG
     _rhsm_level = logging.WARN
     _queue_logger = None
+    _background = False
 
     @classmethod
-    def initialize(cls, log_dir=None, log_file=None, log_per_config=None, debug=None):
+    def initialize(cls, options):
         # Set defaults if necessary
-        if log_dir:
-            cls._log_dir = log_dir
-        if log_file:
-            cls._log_file = log_file
-        if log_per_config:
+        if options.log_dir:
+            cls._log_dir = options.log_dir
+        if options.log_file:
+            cls._log_file = options.log_file
+        if options.log_per_config:
             cls._log_per_config = True
-        cls._level = logging.DEBUG if debug else logging.INFO
+        cls._level = logging.DEBUG if options.debug else logging.INFO
         # We don't want INFO message from RHSM in non-debug mode
-        cls._rhsm_level = logging.DEBUG if debug else logging.WARN
+        cls._rhsm_level = logging.DEBUG if options.debug else logging.WARN
+        cls._background = options.background
 
     @classmethod
     def get_logger(cls, name=None, config=None, queue=True):
         if name is None:
-            # Remove slashes and periods in the log_file (as that could mess logging up
-            name = config['global']['log_file'].replace('.', '_').replace('/', '_') if config else 'main'
-        virt_who_logger_name = 'virtwho.' + name  # The name of the logger instance
-
+            # Remove slashes and periods in the config.name (as that could mess logging up
+            name = config.name.replace('.', '').replace('/', '_') if config else 'main'
+        logger_name = 'virtwho.' + name  # The name of the logger instance
         try:
             # Try to get an existing log
-            return cls._logs[virt_who_logger_name]
+            return cls._logs[logger_name]
         except KeyError:
             pass
 
-        try:
-            return cls._logs["rhsm"]
-        except KeyError:
-            pass
-
-        logger = logging.getLogger(virt_who_logger_name)
-        cls._logs[virt_who_logger_name] = logger
-        # Because we are using or own queue logger we don't want any of the loggers to propagate
-        logger.propagate = False
+        logger = logging.getLogger(logger_name)
+        cls._logs[logger_name] = logger
+        logger.propagate = False  # Because we are using or own queue logger we don't want any of the loggers to propagate
         logger.setLevel(logging.DEBUG)
 
         # Show logging from RHSM in the log when DEBUG is enabled
         rhsm_logger = logging.getLogger("rhsm")
         rhsm_logger.setLevel(cls._rhsm_level)
 
-        rhsm_file_handler = cls.get_file_handler(name="rhsm", config=config)
-        virt_who_file_handler = cls.get_file_handler(name=virt_who_logger_name, config=config)
+        fileHandler = cls.get_file_handler(name=logger_name, config=config)
 
         ppid = os.getppid()
 
-        journal_handler = None
-        stream_handler = None
+        journalHandler = None
+        streamHandler = None
         if ppid == 1:
             # we're running under systemd, log to journal
-            journal_handler = cls.get_journal_handler()
+            journalHandler = cls.get_journal_handler()
         else:
-            # we're not running under systemd, set up streamHandler
-            stream_handler = cls.get_stream_handler(name)
+            # we're not running under systemd, set up streamHandler if we're not running in the background
+            if not cls._background:
+                streamHandler = cls.get_stream_handler(name)
 
         if queue:
-            queue_logger = cls.get_queue_logger()
+            queueLogger = cls.get_queue_logger()
             # get a QueueHandler that will send to this queuelogger
-            queue_handler = queue_logger.getHandler(cls._level)
-            logger.addHandler(queue_handler)
-            main_logger = queue_logger
+            queueHandler = queueLogger.getHandler(cls._level)
+            logger.addHandler(queueHandler)
+            main_logger = queueLogger
         else:
             main_logger = logger
 
-        if virt_who_file_handler:
-            main_logger.addHandler(virt_who_file_handler)
+        if fileHandler:
+            main_logger.addHandler(fileHandler)
+            rhsm_logger.addHandler(fileHandler)
 
-        # We need only one file handler for log from RHSM
-        if rhsm_file_handler and cls._rhsm_file_handler is None:
-            rhsm_logger.addHandler(rhsm_file_handler)
-            cls._rhsm_file_handler = rhsm_file_handler
+        if streamHandler:
+            main_logger.addHandler(streamHandler)
+            rhsm_logger.addHandler(streamHandler)
 
-        if stream_handler:
-            main_logger.addHandler(stream_handler)
-            rhsm_logger.addHandler(stream_handler)
-
-        if journal_handler:
-            main_logger.addHandler(journal_handler)
-            rhsm_logger.addHandler(journal_handler)
+        if journalHandler:
+            main_logger.addHandler(journalHandler)
+            rhsm_logger.addHandler(journalHandler)
 
         return logger
 
     @classmethod
     def get_file_handler(cls, name, config=None):
         if cls._log_per_config:
-            log_file = name + '.log'
+            log_file = getattr(config, 'log_file', None) or (name + '.log')
         else:
             log_file = cls._log_file
 
@@ -267,28 +257,28 @@ class Logger(object):
         path = os.path.join(cls._log_dir, log_file)
 
         try:
-            file_handler = logging.handlers.WatchedFileHandler(path)
+            fileHandler = logging.handlers.WatchedFileHandler(path)
         except Exception as e:
             sys.stderr.write("Unable to log to %s: %s\n" % (path, e))
             return None
 
-        file_handler.addFilter(logging.Filter(name))
-        file_handler.setLevel(cls._level)
-        file_handler.setFormatter(logging.Formatter(FILE_LOG_FORMAT if cls._level != logging.DEBUG else DEBUG_FORMAT))
-        return file_handler
+        fileHandler.addFilter(logging.Filter(name))
+        fileHandler.setLevel(cls._level)
+        fileHandler.setFormatter(logging.Formatter(FILE_LOG_FORMAT if cls._level != logging.DEBUG else DEBUG_FORMAT))
+        return fileHandler
 
     @classmethod
     def get_stream_handler(cls, name):
         if cls._stream_handler is not None:
             return cls._stream_handler
-        stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(cls._level)
-        stream_handler.setFormatter(logging.Formatter(STREAM_LOG_FORMAT if cls._level != logging.DEBUG else DEBUG_FORMAT))
+        streamHandler = logging.StreamHandler()
+        streamHandler.setLevel(cls._level)
+        streamHandler.setFormatter(logging.Formatter(STREAM_LOG_FORMAT if cls._level != logging.DEBUG else DEBUG_FORMAT))
         f = logging.Filter()
         f.filter = lambda record: record.exc_info is None
-        stream_handler.addFilter(f)
-        cls._stream_handler = stream_handler
-        return stream_handler
+        streamHandler.addFilter(f)
+        cls._stream_handler = streamHandler
+        return streamHandler
 
     @classmethod
     def get_journal_handler(cls):
@@ -310,13 +300,8 @@ class Logger(object):
         return cls._queue_logger is not None
 
 
-def init(config):
-    log_dir = config['global']['log_dir']
-    log_file = config['global']['log_file']
-    log_per_config = config['global']['log_per_config']
-    debug = config['global']['debug']
-    return Logger.initialize(log_dir=log_dir, log_file=log_file, log_per_config=log_per_config,
-                             debug=debug)
+def init(options):
+    return Logger.initialize(options)
 
 
 def getLogger(name=None, config=None, queue=True):
@@ -324,6 +309,10 @@ def getLogger(name=None, config=None, queue=True):
     This method does the setup necessary to create and connect both
     the main logger instance used from virtwho as well as loggers for
     all the connected virt backends
+
+    If virt-who is running in background mode, the double fork closes all the
+    filedescriptiors, disrupting communication to queue logger. So the
+    queue logger is created after the initialization phase (after the fork).
 
     First the logger is created without the queue and it's added later on
     (after the fork).

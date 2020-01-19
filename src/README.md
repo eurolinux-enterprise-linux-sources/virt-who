@@ -1,6 +1,6 @@
 # virt-who
 
-[![Build Status](https://travis-ci.org/candlepin/virt-who.svg?branch=master)](https://travis-ci.org/candlepin/virt-who)
+[![Build Status](https://travis-ci.org/virt-who/virt-who.svg?branch=master)](https://travis-ci.org/virt-who/virt-who)
 
 virt-who is agent for reporting virtual guest IDs to subscription manager.
 
@@ -37,7 +37,6 @@ Backends for reporting hosts to guests association:
 * VMWare vCenter Server and ESX(i)
 * Hyper-V
 * Remote libvirt
-* Kubevirt
 
 
 ## Supported subscription managers

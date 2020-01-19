@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function
 """
 Test of ESX virtualization backend.
 
@@ -19,45 +17,29 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
-
 import os
 import requests
 import suds
 from mock import patch, ANY, MagicMock, Mock
-from threading import Event
+from multiprocessing import Queue, Event
 
 from base import TestBase
-from virtwho import DefaultInterval
-from virtwho.datastore import Datastore
+from virtwho.config import Config
 from virtwho.virt.esx import Esx
 from virtwho.virt import VirtError, Guest, Hypervisor, HostGuestAssociationReport
 from proxy import Proxy
 
-from virtwho.virt.esx.esx import EsxConfigSection
-
 
 class TestEsx(TestBase):
     def setUp(self):
-        config_values = {
-            'type': 'esx',
-            'server': 'localhost',
-            'username': 'username',
-            'password': 'password',
-            'owner': 'owner',
-            'env': 'env',
-        }
-        config = EsxConfigSection('test', None)
-        config.update(**config_values)
-        config.validate()
-        self.esx = Esx(self.logger, config, None, interval=DefaultInterval)  #  No dest given here
+        config = Config('test', 'esx', server='localhost', username='username',
+                        password='password', owner='owner', env='env')
+        self.esx = Esx(self.logger, config)
 
-    def run_once(self, datastore=None):
+    def run_once(self, queue=None):
         ''' Run ESX in oneshot mode '''
         self.esx._oneshot = True
-        if datastore is None:
-            datastore = Mock(spec=Datastore())
-
-        self.esx.dest = datastore
+        self.esx._queue = queue or Queue()
         self.esx._terminate_event = Event()
         self.esx._oneshot = True
         self.esx._interval = 0
@@ -72,20 +54,6 @@ class TestEsx(TestBase):
         mock_client.assert_called_with(ANY, location="https://localhost/sdk", cache=None, transport=ANY)
         mock_client.return_value.service.RetrieveServiceContent.assert_called_once_with(_this=ANY)
         mock_client.return_value.service.Login.assert_called_once_with(_this=ANY, userName='username', password='password')
-
-    @patch('suds.client.Client')
-    def test_connect_utf_password(self, mock_client):
-        mock_client.return_value.service.WaitForUpdatesEx.return_value = None
-        # Change password to include some UTF character
-        self.esx.password = 'Žluťoučký_kůň'
-        self.run_once()
-
-        self.assertTrue(mock_client.called)
-        mock_client.assert_called_with(ANY, location="https://localhost/sdk", cache=None, transport=ANY)
-        mock_client.return_value.service.RetrieveServiceContent.assert_called_once_with(_this=ANY)
-        mock_client.return_value.service.Login.assert_called_once_with(
-            _this=ANY, userName='username', password=u'Žluťoučký_kůň'
-        )
 
     @patch('suds.client.Client')
     def test_connection_timeout(self, mock_client):
@@ -105,8 +73,7 @@ class TestEsx(TestBase):
         self.run_once()
 
         self.assertTrue(mock_client.called)
-        mock_client.assert_called_with(ANY, location="https://localhost/sdk", transport=ANY,
-                                       cache=None)
+        mock_client.assert_called_with(ANY, location="https://localhost/sdk", transport=ANY)
         mock_client.return_value.service.RetrieveServiceContent.assert_called_once_with(_this=ANY)
         mock_client.return_value.service.Login.assert_called_once_with(_this=ANY, userName='username', password='password')
 
@@ -118,8 +85,7 @@ class TestEsx(TestBase):
         expected_guest_state = Guest.STATE_RUNNING
 
         fake_parent = MagicMock()
-        fake_parent.value = 'fake_parent_id'
-        fake_parent._type = 'ClusterComputeResource'
+        fake_parent.value = 'Fake_parent'
 
         fake_vm_id = MagicMock()
         fake_vm_id.value = 'guest1'
@@ -137,13 +103,10 @@ class TestEsx(TestBase):
                      'hardware.cpuInfo.numCpuPackages': '1',
                      'name': expected_hostname,
                      'parent': fake_parent,
-                     'vm': fake_vm,
+                     'vm': fake_vm
                      }
         fake_hosts = {'random-host-id': fake_host}
         self.esx.hosts = fake_hosts
-
-        fake_cluster = {'name': 'Fake_cluster_name'}
-        self.esx.clusters = {'fake_parent_id': fake_cluster}
 
         expected_result = Hypervisor(
             hypervisorId=expected_hypervisorId,
@@ -151,7 +114,7 @@ class TestEsx(TestBase):
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.esx.CONFIG_TYPE,
+                    self.esx,
                     expected_guest_state,
                 )
             ],
@@ -159,7 +122,6 @@ class TestEsx(TestBase):
                 Hypervisor.CPU_SOCKET_FACT: '1',
                 Hypervisor.HYPERVISOR_TYPE_FACT: 'vmware',
                 Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
-                Hypervisor.HYPERVISOR_CLUSTER: 'Fake_cluster_name',
             }
         )
         result = self.esx.getHostGuestMapping()['hypervisors'][0]
@@ -173,8 +135,7 @@ class TestEsx(TestBase):
         expected_guest_state = Guest.STATE_UNKNOWN
 
         fake_parent = MagicMock()
-        fake_parent.value = 'fake_parent_id'
-        fake_parent._type = 'ClusterComputeResource'
+        fake_parent.value = 'Fake_parent'
 
         fake_vm_id = MagicMock()
         fake_vm_id.value = 'guest1'
@@ -196,16 +157,13 @@ class TestEsx(TestBase):
         fake_hosts = {'random-host-id': fake_host}
         self.esx.hosts = fake_hosts
 
-        fake_cluster = {'name': 'Fake_cluster_name'}
-        self.esx.clusters = {'fake_parent_id': fake_cluster}
-
         expected_result = Hypervisor(
             hypervisorId=expected_hypervisorId,
             name=expected_hostname,
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.esx.CONFIG_TYPE,
+                    self.esx,
                     expected_guest_state,
                 )
             ],
@@ -213,7 +171,6 @@ class TestEsx(TestBase):
                 Hypervisor.CPU_SOCKET_FACT: '1',
                 Hypervisor.HYPERVISOR_TYPE_FACT: 'vmware',
                 Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
-                Hypervisor.HYPERVISOR_CLUSTER: 'Fake_cluster_name'
             }
         )
         result = self.esx.getHostGuestMapping()['hypervisors'][0]
@@ -227,19 +184,19 @@ class TestEsx(TestBase):
         updateSet.version = 'some_new_version_string'
         updateSet.truncated = False
         mock_client.return_value.service.WaitForUpdatesEx.return_value = updateSet
-        datastore = Datastore()
+        queue = Queue()
         self.esx.applyUpdates = Mock()
         getHostGuestMappingMock = Mock()
         getHostGuestMappingMock.return_value = expected_assoc
         self.esx.getHostGuestMapping = getHostGuestMappingMock
-        self.run_once(datastore)
-        result_report = datastore.get(self.esx.config.name)
-        self.assertEqual(expected_report.config.name, result_report.config.name)
-        self.assertEqual(expected_report.config._values, result_report.config._values)
+        self.run_once(queue)
+        self.assertEqual(queue.qsize(), 1)
+        result_report = queue.get(block=True, timeout=1)
+        self.assertEqual(expected_report.config.hash, result_report.config.hash)
         self.assertEqual(expected_report._assoc, result_report._assoc)
 
     def test_proxy(self):
-        self.esx.config['simplified_vim'] = True
+        self.esx.config.simplified_vim = True
         proxy = Proxy()
         self.addCleanup(proxy.terminate)
         proxy.start()

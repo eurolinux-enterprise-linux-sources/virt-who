@@ -1,4 +1,3 @@
-from __future__ import print_function
 """
 Test of Fake virtualization backend.
 
@@ -26,7 +25,7 @@ import shutil
 
 from base import TestBase
 
-from virtwho.config import DestinationToSourceMapper, init_config
+from virtwho.config import ConfigManager
 from virtwho.virt import Virt, Hypervisor, VirtError
 from virtwho.virt.fakevirt import FakeVirt
 
@@ -87,26 +86,24 @@ class TestFakeRead(TestBase):
 [test]
 type=fake
 is_hypervisor=true
-owner=taylor
-env=swift
 file=%s
 """ % self.hypervisor_file)
-        effective_config = init_config({}, {}, config_dir=self.config_dir)
-        manager = DestinationToSourceMapper(effective_config)
-        self.assertEqual(len(manager.configs), 1)
-        virt = Virt.from_config(self.logger, manager.configs[0][1], None)
-        self.assertEqual(type(virt), FakeVirt)
+
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEquals(len(manager.configs), 1)
+        virt = Virt.fromConfig(self.logger, manager.configs[0])
+        self.assertEquals(type(virt), FakeVirt)
         mapping = virt.getHostGuestMapping()
         self.assertTrue("hypervisors" in mapping)
         hypervisors = mapping["hypervisors"]
-        self.assertEqual(len(hypervisors), 1)
+        self.assertEquals(len(hypervisors), 1)
         hypervisor = hypervisors[0]
-        self.assertEqual(type(hypervisor), Hypervisor)
-        self.assertEqual(hypervisor.hypervisorId, "60527517-6284-7593-6AAB-75BF2A6375EF")
-        self.assertEqual(len(hypervisor.guestIds), 1)
+        self.assertEquals(type(hypervisor), Hypervisor)
+        self.assertEquals(hypervisor.hypervisorId, "60527517-6284-7593-6AAB-75BF2A6375EF")
+        self.assertEquals(len(hypervisor.guestIds), 1)
         guest = hypervisor.guestIds[0]
-        self.assertEqual(guest.uuid, "07ED8178-95D5-4244-BC7D-582A54A48FF8")
-        self.assertEqual(guest.state, 1)
+        self.assertEquals(guest.uuid, "07ED8178-95D5-4244-BC7D-582A54A48FF8")
+        self.assertEquals(guest.state, 1)
 
     def test_read_hypervisor_from_non_hypervisor(self):
         with open(self.hypervisor_file, "w") as f:
@@ -117,15 +114,14 @@ file=%s
 [test]
 type=fake
 is_hypervisor=true
-owner=covfefe
-env=covfefe
 file=%s
 """ % self.hypervisor_file)
-        effective_config = init_config({}, {}, config_dir=self.config_dir)
-        DestinationToSourceMapper(effective_config)
-        # The 'test' section is not valid here (as the json provided will not work with
-        # the is_hypervisor value set to true)
-        self.assertNotIn('test', effective_config)
+
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEquals(len(manager.configs), 1)
+        virt = Virt.fromConfig(self.logger, manager.configs[0])
+        self.assertEquals(type(virt), FakeVirt)
+        self.assertRaises(VirtError, virt.getHostGuestMapping)
 
     def test_read_non_hypervisor(self):
         with open(self.hypervisor_file, "w") as f:
@@ -139,16 +135,15 @@ is_hypervisor=false
 file=%s
 """ % self.hypervisor_file)
 
-        effective_config = init_config({}, {}, config_dir=self.config_dir)
-        manager = DestinationToSourceMapper(effective_config)
-        self.assertEqual(len(manager.configs), 1)
-        virt = Virt.from_config(self.logger, manager.configs[0][1], None)
-        self.assertEqual(type(virt), FakeVirt)
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEquals(len(manager.configs), 1)
+        virt = Virt.fromConfig(self.logger, manager.configs[0])
+        self.assertEquals(type(virt), FakeVirt)
         guests = virt.listDomains()
-        self.assertEqual(len(guests), 1)
+        self.assertEquals(len(guests), 1)
         guest = guests[0]
-        self.assertEqual(guest.uuid, "9f06a84d-5f56-4e7e-be0c-937b3c1924d7")
-        self.assertEqual(guest.state, 1)
+        self.assertEquals(guest.uuid, "9f06a84d-5f56-4e7e-be0c-937b3c1924d7")
+        self.assertEquals(guest.state, 1)
 
     def test_read_non_hypervisor_from_hypervisor(self):
         with open(self.hypervisor_file, "w") as f:
@@ -162,6 +157,8 @@ is_hypervisor=false
 file=%s
 """ % self.hypervisor_file)
 
-        effective_config = init_config({}, {}, config_dir=self.config_dir)
-        # This is an invalid case, the config section that is invalid should have been dropped
-        self.assertNotIn('test', effective_config)
+        manager = ConfigManager(self.logger, self.config_dir)
+        self.assertEquals(len(manager.configs), 1)
+        virt = Virt.fromConfig(self.logger, manager.configs[0])
+        self.assertEquals(type(virt), FakeVirt)
+        self.assertRaises(VirtError, virt.listDomains)

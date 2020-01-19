@@ -79,7 +79,7 @@
                         <changeSet>
                             <name>parent</name>
                             <op>assign</op>
-                            <val type="ClusterComputeResource" xsi:type="ManagedObjectReference">ha-compute-res</val>
+                            <val type="ComputeResource" xsi:type="ManagedObjectReference">ha-compute-res</val>
                         </changeSet>
                         <changeSet>
                             <name>vm</name>
@@ -122,7 +122,7 @@
                         <changeSet>
                             <name>parent</name>
                             <op>assign</op>
-                            <val type="ClusterComputeResource" xsi:type="ManagedObjectReference">ha-compute-res</val>
+                            <val type="ComputeResource" xsi:type="ManagedObjectReference">ha-compute-res</val>
                         </changeSet>
                         <changeSet>
                             <name>vm</name>
@@ -161,55 +161,12 @@
                         <changeSet>
                             <name>parent</name>
                             <op>assign</op>
-                            <val type="ClusterComputeResource" xsi:type="ManagedObjectReference">ha-compute-res</val>
+                            <val type="ComputeResource" xsi:type="ManagedObjectReference">ha-compute-res</val>
                         </changeSet>
                         <changeSet>
                             <name>vm</name>
                             <op>assign</op>
                             <val xsi:type="ArrayOfManagedObjectReference"></val>
-                        </changeSet>
-                    </objectSet>
-                    <objectSet>
-                        <kind>enter</kind>
-                        <obj type="HostSystem">ha-host4</obj>
-                        <changeSet>
-                            <name>hardware.cpuInfo.numCpuPackages</name>
-                            <op>assign</op>
-                            <val xsi:type="xsd:short">1</val>
-                        </changeSet>
-                        <changeSet>
-                            <name>config.network.dnsConfig.hostName</name>
-                            <op>assign</op>
-                            <val xsi:type="xsd:string">localhost百度</val>
-                        </changeSet>
-                        <changeSet>
-                            <name>config.network.dnsConfig.domainName</name>
-                            <op>assign</op>
-                            <val xsi:type="xsd:string">localdomain</val>
-                        </changeSet>
-                        <changeSet>
-                            <name>name</name>
-                            <op>assign</op>
-                            <val xsi:type="xsd:string">localhost百度.localdomain</val>
-                        </changeSet>
-                        <changeSet>
-                            <name>parent</name>
-                            <op>assign</op>
-                            <val type="ClusterComputeResource" xsi:type="ManagedObjectReference">ha-compute-res</val>
-                        </changeSet>
-                        <changeSet>
-                            <name>vm</name>
-                            <op>assign</op>
-                            <val xsi:type="ArrayOfManagedObjectReference"></val>
-                        </changeSet>
-                    </objectSet>
-                    <objectSet>
-                        <kind>enter</kind>
-                        <obj type="ClusterComputeResource">ha-compute-res</obj>
-                        <changeSet>
-                            <name>name</name>
-                            <op>assign</op>
-                            <val xsi:type="xsd:string">ha-cluster-1</val>
                         </changeSet>
                     </objectSet>
                 </filterSet>

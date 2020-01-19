@@ -1,0 +1,382 @@
+diff --git a/rel-eng/packages/virt-who b/rel-eng/packages/virt-who
+index 83bce5c..c41f781 100644
+--- a/rel-eng/packages/virt-who
++++ b/rel-eng/packages/virt-who
+@@ -1 +1 @@
+-0.19-4 ./
++0.19-5 ./
+diff --git a/tests/test_virt.py b/tests/test_virt.py
+index 7bd97c0..04b0117 100644
+--- a/tests/test_virt.py
++++ b/tests/test_virt.py
+@@ -305,6 +305,7 @@ class TestDestinationThread(TestBase):
+         # In this test we want to see that the wait method is called when we
+         # expect and with what parameters we expect
+         destination_thread.wait = Mock()
++        destination_thread.is_terminated = Mock(return_value=False)
+         destination_thread._send_data(data_to_send)
+         # We expect there two be two calls to wait with the value of the
+         # polling_interval attr because we'd like to wait one polling
+@@ -339,7 +340,7 @@ class TestDestinationThread(TestBase):
+                         'source2': report2}
+         config = Mock()
+         config.polling_interval = 10
+-        error_to_throw = ManagerThrottleError(retry_after=20)
++        error_to_throw = ManagerThrottleError(retry_after=62)
+ 
+         manager = Mock()
+         manager.hypervisorCheckIn.return_value = report1
+@@ -374,8 +375,9 @@ class TestDestinationThread(TestBase):
+                                                dest=manager,
+                                                interval=interval,
+                                                terminate_event=terminate_event,
+-                                               oneshot=True, options=options)
++                                               oneshot=False, options=options)
+         destination_thread.wait = Mock()
++        destination_thread.is_terminated = Mock(return_value=False)
+         destination_thread._send_data(data_to_send)
+         destination_thread.wait.assert_has_calls(expected_wait_calls)
+ 
+@@ -412,6 +414,7 @@ class TestDestinationThread(TestBase):
+                                                terminate_event=terminate_event,
+                                                oneshot=True, options=options)
+         destination_thread.wait = Mock()
++        destination_thread.is_terminated = Mock(return_value=False)
+         destination_thread._send_data(data_to_send)
+         manager.sendVirtGuests.assert_has_calls([call(report1,
+                                                       options=destination_thread.options)])
+@@ -436,7 +439,7 @@ class TestDestinationThread(TestBase):
+         config.polling_interval = 10
+         logger = Mock()
+ 
+-        error_to_throw = ManagerThrottleError(retry_after=21)
++        error_to_throw = ManagerThrottleError(retry_after=62)
+ 
+         manager = Mock()
+         manager.sendVirtGuests = Mock(side_effect=[error_to_throw, report1])
+@@ -450,12 +453,11 @@ class TestDestinationThread(TestBase):
+                                                dest=manager,
+                                                interval=interval,
+                                                terminate_event=terminate_event,
+-                                               oneshot=True, options=options)
++                                               oneshot=False, options=options)
+         destination_thread.wait = Mock()
++        destination_thread.is_terminated = Mock(return_value=False)
+         destination_thread._send_data(data_to_send)
+         manager.sendVirtGuests.assert_has_calls([call(report1,
+-                                                      options=destination_thread.options),
+-                                                 call(report1,
+                                                       options=destination_thread.options)])
+         destination_thread.wait.assert_has_calls([call(
+                 wait_time=error_to_throw.retry_after)])
+@@ -500,6 +502,7 @@ class TestDestinationThread(TestBase):
+                                                terminate_event=terminate_event,
+                                                oneshot=False, options=options)
+         destination_thread.is_initial_run = False
++        destination_thread.is_terminated = Mock(return_value=False)
+         destination_thread._send_data(data_to_send=data_to_send)
+ 
+         expected_hashes = {}
+diff --git a/virt-who-config.5 b/virt-who-config.5
+index ab89f05..99fd5bb 100644
+--- a/virt-who-config.5
++++ b/virt-who-config.5
+@@ -4,17 +4,17 @@ virt-who-config - configuration for virt-who
+ .SH SYNOPISIS
+ /etc/sysconfig/virt-who
+ /etc/virt-who.conf
+-/etc/virt-who.d/*
++/etc/virt-who.d/*.conf
+ .SH DESCRIPTION
+-Configuration format is ini-like for files /etc/virt-who.conf and /etc/virt-who.d/*.
++Configuration format is ini-like for files /etc/virt-who.conf and /etc/virt-who.d/*.conf.
+ The contents of /etc/sysconfig/virt-who are environment variables to be used when virt-who is run as a service.
+-The configuration files located at /etc/virt-who.d/ are called virtualization backend configurations.
+-All non-hidden files in this directory are considered configuration files. If no section (name in square brackets) is present in the configuration file, it will be ignored and warning will be shown.
++The configuration files located at /etc/virt-who.d/*.conf are called virtualization backend configurations.
++All non-hidden files in this directory (ending in '.conf') are considered configuration files. If no section (name in square brackets) is present in the configuration file, it will be ignored and warning will be shown.
+ The configuration located at /etc/virt-who.conf is the main configuration for virt-who.
+ Below are descriptions of both the required and optional options for both kinds of configs and how they are used.
+ .SH GENERAL CONFIGURATION
+ The general configuration file (located at /etc/virt-who.conf), has two special sections \fBglobal\fR and \fBdefaults\fR.
+-The settings that can be specified in \fBdefaults\fR are any setting listed in the \fBVIRTUALIZATION BACKEND CONFIGURATION\fR section of this manual. These settings are applied as defaults to the configurations found in /etc/virt-who.d/*.
++The settings that can be specified in \fBdefaults\fR are any setting listed in the \fBVIRTUALIZATION BACKEND CONFIGURATION\fR section of this manual. These settings are applied as defaults to the configurations found in /etc/virt-who.d/*.conf.
+ 
+ The settings in the \fBglobal\fR affect the overall operation of the application.
+ The following are options that can be specified in the \fBglobal\fR section:
+diff --git a/virt-who.spec b/virt-who.spec
+index 9d11312..5378c1c 100644
+--- a/virt-who.spec
++++ b/virt-who.spec
+@@ -6,7 +6,7 @@
+ 
+ Name:           virt-who
+ Version:        0.19
+-Release:        4%{?dist}
++Release:        5%{?dist}
+ Summary:        Agent for reporting virtual guest IDs to subscription-manager
+ 
+ Group:          System Environment/Base
+@@ -127,6 +127,18 @@ fi
+ 
+ 
+ %changelog
++* Wed May 17 2017 Kevin Howell <khowell@redhat.com> 0.19-5
++- 1448267: Fix polling behavior for oneshot, CTRL-C, 429 responses
++  (csnyder@redhat.com)
++- 1450747: Continue running destination threads on internal failure
++  (csnyder@redhat.com)
++- 1444718: Log name of config when duplicate reports are retrieved
++  (csnyder@redhat.com)
++- 1447264: Keep running on InvalidPasswordFormat given other valid configs
++  (csnyder@redhat.com)
++- 1369107: Update docs and log messages to show the *.conf requirement
++  (csnyder@redhat.com)
++
+ * Mon Apr 24 2017 Kevin Howell <khowell@redhat.com> 0.19-4
+ - 1436517: Fix api base detection for rhevm version 3 and 4
+   (csnyder@redhat.com)
+diff --git a/virtwho/config.py b/virtwho/config.py
+index fbcf284..074a4f5 100644
+--- a/virtwho/config.py
++++ b/virtwho/config.py
+@@ -524,12 +524,26 @@ class ConfigManager(object):
+         self.sources = set()
+         self.dests = set()
+         self.dest_to_sources_map = {}
++        all_dir_content = None
++        conf_files = None
++        non_conf_files = None
+         try:
+-            config_dir_content = [s for s in os.listdir(config_dir) if s.endswith('.conf')]
++            all_dir_content = set(os.listdir(config_dir))
++            conf_files = set(s for s in all_dir_content if s.endswith('.conf'))
++            non_conf_files = all_dir_content - conf_files
+         except OSError:
+             self.logger.warn("Configuration directory '%s' doesn't exist or is not accessible", config_dir)
+             return
+-        for conf in config_dir_content:
++        if not all_dir_content:
++            self.logger.warn("Configuration directory '%s' appears empty", config_dir)
++        elif not conf_files:
++            self.logger.warn("Configuration directory '%s' does not have any '*.conf' files but "
++                             "is not empty", config_dir)
++        elif non_conf_files:
++            self.logger.debug("There are files in '%s' not ending in '*.conf' is this "
++                              "intentional?", config_dir)
++
++        for conf in conf_files:
+             if conf.startswith('.'):
+                 continue
+             try:
+@@ -561,6 +575,8 @@ class ConfigManager(object):
+                 self._configs.append(config)
+             except NoOptionError as e:
+                 self.logger.error(str(e))
++            except InvalidPasswordFormat as e:
++                self.logger.error(str(e))
+ 
+     def readFile(self, filename):
+         parser = StripQuotesConfigParser()
+diff --git a/virtwho/main.py b/virtwho/main.py
+index 95fcf63..e0b8347 100644
+--- a/virtwho/main.py
++++ b/virtwho/main.py
+@@ -161,7 +161,8 @@ def main():
+             exit(1, err)
+         # In order to keep compatibility with older releases of virt-who,
+         # fallback to using libvirt as default virt backend
+-        logger.info("No configurations found, using libvirt as backend")
++        logger.info("No configurations found (are there any '.conf' files in /etc/virt-who.d?), "
++                    "using libvirt as backend")
+         executor.configManager.addConfig(Config("env/cmdline", "libvirt"))
+ 
+     executor.configManager.update_dest_to_source_map()
+diff --git a/virtwho/virt/virt.py b/virtwho/virt/virt.py
+index 9cf6516..f4d63b4 100644
+--- a/virtwho/virt/virt.py
++++ b/virtwho/virt/virt.py
+@@ -31,6 +31,7 @@ import fnmatch
+ from virtwho.config import NotSetSentinel, Satellite5DestinationInfo, \
+     Satellite6DestinationInfo, DefaultDestinationInfo
+ from virtwho.manager import ManagerError, ManagerThrottleError, ManagerFatalError
++from virtwho import MinimumSendInterval
+ 
+ try:
+     from collections import OrderedDict
+@@ -424,6 +425,27 @@ class IntervalThread(Thread):
+         """
+         pass
+ 
++    @staticmethod
++    def handle_429(retry_after, number_of_failures):
++        """
++        @param retry_after: The value of the Retry-After header (if included)
++        @type retry_after: int
++        @param number_of_failures: The number of failures that have happened attempting the same
++        request.
++        @type retry_after: int
++
++        @return: The number of seconds that should be waited before retrying
++        @rtype: int
++        """
++        wait_time = retry_after
++        if wait_time and wait_time >= MinimumSendInterval:
++            return wait_time
++        if number_of_failures > 0:
++            wait_time = MinimumSendInterval * number_of_failures
++        else:
++            wait_time = MinimumSendInterval
++        return wait_time
++
+ 
+ class DestinationThread(IntervalThread):
+     """
+@@ -496,7 +518,8 @@ class DestinationThread(IntervalThread):
+                 continue
+             if ignore_duplicates and report.hash == self.last_report_for_source.get(source_key,
+                                                                                     None):
+-                self.logger.debug('Duplicate report found, ignoring')
++                self.logger.debug('Duplicate report found for config "%s", ignoring',
++                                  report.config.name)
+                 continue
+             reports[source_key] = report
+         return reports
+@@ -537,8 +560,9 @@ class DestinationThread(IntervalThread):
+             self.logger.debug('No data to send, waiting for next interval')
+             return
+         if isinstance(data_to_send, ErrorReport):
+-            self.logger.info('Error report received, shutting down')
+-            self.stop()
++            self.logger.info('Error report received')
++            if data_to_send.config.name != self.config.name:
++                self.stop()
+             return
+         all_hypervisors = [] # All the Host-guest mappings together
+         domain_list_reports = []  # Source_keys of DomainListReports
+@@ -577,32 +601,41 @@ class DestinationThread(IntervalThread):
+             result = None
+             # Try to actually do the checkin whilst being mindful of the
+             # rate limit (retrying where necessary)
+-            while result is None:
++            num_429_received = 0
++            while result is None and not self.is_terminated():
+                 try:
+                     result = self.dest.hypervisorCheckIn(
+                             batch_host_guest_report,
+                             options=self.options)
+                     break
+                 except ManagerThrottleError as e:
++                    if self._oneshot:
++                        self.logger.debug('429 encountered while performing hypervisor checkin in '
++                                          'oneshot mode, not retrying')
++                        sources_erred.extend(reports_batched)
++                        break
++                    num_429_received += 1
++                    retry_after = self.handle_429(e.retry_after, num_429_received)
+                     self.logger.debug("429 encountered while performing "
+                                       "hypervisor check in.\n"
+                                       "Trying again in "
+-                                      "%s" % e.retry_after)
+-                    self.interval_modifier = e.retry_after
++                                      "%s", retry_after)
++                    self.interval_modifier = retry_after
+                 except (ManagerError, ManagerFatalError):
+                     self.logger.exception("Error during hypervisor "
+-                                        "checkin: ")
++                                          "checkin: ")
+                     if self._oneshot:
+                         sources_erred.extend(reports_batched)
+                     break
+                 self.wait(wait_time=self.interval_modifier)
+                 self.interval_modifier = 0
+             initial_job_check = True
++            num_429_received = 0
+             # Poll for async results if async (retrying where necessary)
+             while result and batch_host_guest_report.state not in [
+                 AbstractVirtReport.STATE_CANCELED,
+                 AbstractVirtReport.STATE_FAILED,
+-                AbstractVirtReport.STATE_FINISHED]:
++                AbstractVirtReport.STATE_FINISHED] and not self.is_terminated():
+                 if self.interval_modifier != 0:
+                     wait_time = self.interval_modifier
+                     self.interval_modifier = 0
+@@ -613,9 +646,15 @@ class DestinationThread(IntervalThread):
+                 try:
+                     self.dest.check_report_state(batch_host_guest_report)
+                 except ManagerThrottleError as e:
++                    if self._oneshot:
++                        self.logger.debug('429 encountered when checking job state in '
++                                          'oneshot mode, not retrying')
++                        sources_sent.extend(reports_batched)
++                        break
++                    retry_after = self.handle_429(e.retry_after, num_429_received)
+                     self.logger.debug('429 encountered while checking job '
+-                                      'state, checking again later')
+-                    self.interval_modifier = e.retry_after
++                                      'state, checking again in "%s"', retry_after)
++                    self.interval_modifier = retry_after
+                 except (ManagerError, ManagerFatalError):
+                     self.logger.exception("Error during job check: ")
+                     if self._oneshot:
+@@ -639,7 +678,8 @@ class DestinationThread(IntervalThread):
+             report = data_to_send[source_key]
+             if not self.options.print_:
+                 retry = True
+-                while retry:  # Retry if we encounter a 429
++                num_429_received = 0
++                while retry and not self.is_terminated():  # Retry if we encounter a 429
+                     try:
+                         self.dest.sendVirtGuests(report, options=self.options)
+                         sources_sent.append(source_key)
+@@ -647,10 +687,17 @@ class DestinationThread(IntervalThread):
+                             source_key].hash
+                         retry = False
+                     except ManagerThrottleError as e:
++                        if self._oneshot:
++                            self.logger.debug('429 encountered when sending virt guests in '
++                                             'oneshot mode, not retrying')
++                            sources_erred.append(source_key)
++                            break
++                        num_429_received += 1
++                        retry_after = self.handle_429(e.retry_after, num_429_received)
+                         self.logger.debug('429 encountered when sending virt '
+                                           'guests.'
+-                                          'Retrying after: %s' % e.retry_after)
+-                        self.wait(wait_time=e.retry_after)
++                                          'Retrying after: %s', retry_after)
++                        self.wait(wait_time=retry_after)
+                     except (ManagerError, ManagerFatalError):
+                         self.logger.exception("Fatal error during send virt "
+                                               "guests: ")
+@@ -713,7 +760,8 @@ class Satellite5DestinationThread(DestinationThread):
+                 # one communication via Satellite 5. As such we'll just do a
+                 # hypervisor check in for each report of that type.
+                 result = None
+-                while result is None:
++                num_429_received = 0
++                while result is None and not self.is_terminated():
+                     try:
+                         result = self.dest.hypervisorCheckIn(
+                                 report,
+@@ -722,11 +770,18 @@ class Satellite5DestinationThread(DestinationThread):
+                         sources_sent.append(source_key)
+                         break
+                     except ManagerThrottleError as e:
++                        if self._oneshot:
++                            self.logger.debug('429 encountered during hypervisor checkin in '
++                                             'oneshot mode, not retrying')
++                            sources_erred.append(source_key)
++                            break
++                        num_429_received += 1
++                        retry_after = self.handle_429(e.retry_after, num_429_received)
+                         self.logger.debug("429 encountered while performing "
+                                           "hypervisor check in.\n"
+                                           "Trying again in "
+-                                          "%s" % e.retry_after)
+-                        self.interval_modifier = e.retry_after
++                                          "%s", retry_after)
++                        self.interval_modifier = retry_after
+                     except ManagerFatalError:
+                         self.logger.exception("Fatal error during hypervisor "
+                                               "checkin: ")

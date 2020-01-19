@@ -1,4 +1,3 @@
-from __future__ import print_function
 """
 Test of RHEV-M virtualization backend.
 
@@ -22,15 +21,14 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 import os
 import requests
 from mock import patch, call, ANY, MagicMock
-from threading import Event
-from six.moves.queue import Queue
+from multiprocessing import Queue, Event
 
 from base import TestBase
 from proxy import Proxy
 
-from virtwho.virt import Virt, VirtError, Guest, Hypervisor
-from virtwho.virt.rhevm.rhevm import RhevmConfigSection
-from virtwho.datastore import Datastore
+from virtwho.config import Config
+from virtwho.virt.rhevm import RhevM
+from virtwho.virt import VirtError, Guest, Hypervisor
 
 
 uuids = {
@@ -54,15 +52,11 @@ HOSTS_XML = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <hosts>
     <host href="/api/hosts/{host}" id="{host}">
         <name>hostname.domainname</name>
-        <address>hostname.domainname</address>
         <cluster href="/api/clusters/{cluster}" id="{cluster}"/>
         <cpu>
             <topology sockets="1" cores="6" threads="2"/>
         </cpu>
         <version full_version="1.2.3" />
-        <hardware_information>
-            <uuid>db5a7a9f-6e33-3bfd-8129-c8010e4e1497</uuid>
-        </hardware_information>
     </host>
 </hosts>
 '''.format(**uuids)
@@ -95,24 +89,18 @@ VMS_XML_STATUS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 
 class TestRhevM(TestBase):
-    @staticmethod
-    def create_config(name, wrapper, **kwargs):
-        config = RhevmConfigSection(name, wrapper)
-        config.update(**kwargs)
-        config.validate()
-        return config
-
     def setUp(self):
-        config = self.create_config(name='test', wrapper=None, type='rhevm', server='localhost', username='username',
+        config = Config('test', 'rhevm', server='localhost', username='username',
                         password='password', owner='owner', env='env')
-        self.rhevm = Virt.from_config(self.logger, config, Datastore())
+
+        self.rhevm = RhevM(self.logger, config)
         self.rhevm.major_version = '3'
         self.rhevm.build_urls()
 
     def run_once(self, queue=None):
-        """Run RHEV-M in oneshot mode"""
+        ''' Run RHEV-M in oneshot mode '''
         self.rhevm._oneshot = True
-        self.rhevm.dest = queue or Queue()
+        self.rhevm._queue = queue or Queue()
         self.rhevm._terminate_event = Event()
         self.rhevm._oneshot = True
         self.rhevm._interval = 0
@@ -177,7 +165,7 @@ class TestRhevM(TestBase):
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.rhevm.CONFIG_TYPE,
+                    self.rhevm,
                     expected_guest_state,
                 )
             ],
@@ -185,8 +173,6 @@ class TestRhevM(TestBase):
                 Hypervisor.CPU_SOCKET_FACT: '1',
                 Hypervisor.HYPERVISOR_TYPE_FACT: 'qemu',
                 Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
-                Hypervisor.HYPERVISOR_CLUSTER: 'Cetus',
-                Hypervisor.SYSTEM_UUID_FACT: 'db5a7a9f-6e33-3bfd-8129-c8010e4e1497',
             }
         )
         result = self.rhevm.getHostGuestMapping()['hypervisors'][0]
@@ -223,7 +209,7 @@ class TestRhevM(TestBase):
             guestIds=[
                 Guest(
                     expected_guestId,
-                    self.rhevm.CONFIG_TYPE,
+                    self.rhevm,
                     expected_guest_state,
                 )
             ],
@@ -231,8 +217,6 @@ class TestRhevM(TestBase):
                 Hypervisor.CPU_SOCKET_FACT: '1',
                 Hypervisor.HYPERVISOR_TYPE_FACT: 'qemu',
                 Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
-                Hypervisor.HYPERVISOR_CLUSTER: 'Cetus',
-                Hypervisor.SYSTEM_UUID_FACT: 'db5a7a9f-6e33-3bfd-8129-c8010e4e1497',
             }
         )
         result = self.rhevm.getHostGuestMapping()['hypervisors'][0]

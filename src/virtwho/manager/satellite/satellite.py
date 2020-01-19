@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function
 """
 Module for communication with Satellite (RHN Classic), part of virt-who
 
@@ -20,8 +18,8 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
-from six.moves import xmlrpc_client
-from six.moves import cPickle as pickle
+import xmlrpclib
+import pickle
 import json
 
 from virtwho.manager import Manager, ManagerError
@@ -49,7 +47,7 @@ GUEST_STATE_TO_SATELLITE = {
 
 
 class Satellite(Manager):
-    sm_type = "satellite"
+    smType = "satellite"
     """ Class for interacting with satellite (RHN Classic). """
     HYPERVISOR_SYSTEMID_FILE = "/var/lib/virt-who/hypervisor-systemid-%s"
 
@@ -60,9 +58,9 @@ class Satellite(Manager):
         self.options = options
 
     def _connect(self, config):
-        server = config['sat_server']
-        self.username = config['sat_username']
-        self.password = config['sat_password']
+        server = config.sat_server or self.options.sat_server
+        self.username = config.sat_username or self.options.sat_username
+        self.password = config.sat_password or self.options.sat_password
 
         if not server.startswith("http://") and not server.startswith("https://"):
             server = "https://%s" % server
@@ -77,9 +75,9 @@ class Satellite(Manager):
         self.logger.debug("Initializing satellite connection to %s", server)
         try:
             # We need two API endpoints: /XMLRPC and /rpc/api
-            self.server_xmlrpc = xmlrpc_client.ServerProxy(server, verbose=0, transport=RequestsXmlrpcTransport(server))
+            self.server_xmlrpc = xmlrpclib.ServerProxy(server, verbose=0, transport=RequestsXmlrpcTransport(server))
             server_api = server.replace('/XMLRPC', '/rpc/api')
-            self.server_rpcapi = xmlrpc_client.ServerProxy(server_api, verbose=0, transport=RequestsXmlrpcTransport(server_api))
+            self.server_rpcapi = xmlrpclib.ServerProxy(server_api, verbose=0, transport=RequestsXmlrpcTransport(server_api))
         except Exception as e:
             self.logger.exception("Unable to connect to the Satellite server")
             raise SatelliteError("Unable to connect to the Satellite server: " % str(e))
@@ -105,7 +103,7 @@ class Satellite(Manager):
         try:
             hypervisor_base_channel = self.server_rpcapi.channel.software.getDetails(session, base_channel_name)
             self.logger.debug("Using existing hypervisor-base channel")
-        except xmlrpc_client.Fault as e:
+        except xmlrpclib.Fault as e:
             if e.faultCode == -210:
                 # The channel doesn't exist yet
                 hypervisor_base_channel = None
@@ -150,7 +148,7 @@ class Satellite(Manager):
             raise SatelliteError("Unable to refresh HW profile: %s" % str(e))
         # save the hypervisor systemid
         try:
-            with open(systemid_filename, "wb") as f:
+            with open(systemid_filename, "w") as f:
                 pickle.dump(new_system, f)
         except (OSError, IOError) as e:
             self.logger.exception("Unable to write system id to %s: %s", systemid_filename, str(e))
@@ -225,22 +223,19 @@ class Satellite(Manager):
 
         for hypervisor in mapping['hypervisors']:
             self.logger.debug("Loading systemid for %s", hypervisor.hypervisorId)
-            hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId,
-                                                        hypervisor_type=report.config['type'])
+            hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId, hypervisor_type=report.config.type)
 
             self.logger.debug("Building plan for hypervisor %s: %s", hypervisor.hypervisorId, hypervisor.guestIds)
-            plan = self._assemble_plan(hypervisor.guestIds, hypervisor.hypervisorId,
-                                       hypervisor_type=report.config['type'])
+            plan = self._assemble_plan(hypervisor.guestIds, hypervisor.hypervisorId, hypervisor_type=report.config.type)
 
             try:
                 try:
                     self.logger.debug("Sending plan: %s", plan)
                     self.server_xmlrpc.registration.virt_notify(hypervisor_systemid["system_id"], plan)
-                except xmlrpc_client.Fault as e:
+                except xmlrpclib.Fault as e:
                     if e.faultCode == -9:
                         self.logger.warn("System was deleted from Satellite 5, reregistering")
-                        hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId,
-                                                                    hypervisor_type=report.config['type'], force=True)
+                        hypervisor_systemid = self._load_hypervisor(hypervisor.hypervisorId, hypervisor_type=report.config.type, force=True)
                         self.server_xmlrpc.registration.virt_notify(hypervisor_systemid["system_id"], plan)
             except Exception as e:
                 self.logger.exception("Unable to send host/guest association to the satellite:")

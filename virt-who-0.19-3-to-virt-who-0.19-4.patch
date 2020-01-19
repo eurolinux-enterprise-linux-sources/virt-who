@@ -1,0 +1,238 @@
+diff --git a/rel-eng/packages/virt-who b/rel-eng/packages/virt-who
+index 1f40add..83bce5c 100644
+--- a/rel-eng/packages/virt-who
++++ b/rel-eng/packages/virt-who
+@@ -1 +1 @@
+-0.19-3 ./
++0.19-4 ./
+diff --git a/tests/test_virt.py b/tests/test_virt.py
+index cfb8de6..7bd97c0 100644
+--- a/tests/test_virt.py
++++ b/tests/test_virt.py
+@@ -114,6 +114,7 @@ class TestDestinationThread(TestBase):
+                                                interval=interval,
+                                                terminate_event=terminate_event,
+                                                oneshot=True, options=options)
++        destination_thread.is_initial_run = False
+         result_data = destination_thread._get_data()
+         self.assertEquals(result_data, datastore)
+ 
+@@ -148,6 +149,7 @@ class TestDestinationThread(TestBase):
+                                                terminate_event=terminate_event,
+                                                oneshot=True,
+                                                options=options)
++        destination_thread.is_initial_run = False
+         destination_thread.last_report_for_source = last_report_for_source
+         result_data = destination_thread._get_data()
+         self.assertEquals(result_data, expected_data)
+@@ -497,6 +499,7 @@ class TestDestinationThread(TestBase):
+                                                interval=interval,
+                                                terminate_event=terminate_event,
+                                                oneshot=False, options=options)
++        destination_thread.is_initial_run = False
+         destination_thread._send_data(data_to_send=data_to_send)
+ 
+         expected_hashes = {}
+diff --git a/virt-who.spec b/virt-who.spec
+index d43ba78..9d11312 100644
+--- a/virt-who.spec
++++ b/virt-who.spec
+@@ -6,7 +6,7 @@
+ 
+ Name:           virt-who
+ Version:        0.19
+-Release:        3%{?dist}
++Release:        4%{?dist}
+ Summary:        Agent for reporting virtual guest IDs to subscription-manager
+ 
+ Group:          System Environment/Base
+@@ -127,6 +127,11 @@ fi
+ 
+ 
+ %changelog
++* Mon Apr 24 2017 Kevin Howell <khowell@redhat.com> 0.19-4
++- 1436517: Fix api base detection for rhevm version 3 and 4
++  (csnyder@redhat.com)
++- 1442337: Send updates immediately the first run (csnyder@redhat.com)
++
+ * Wed Apr 12 2017 Kevin Howell <khowell@redhat.com> 0.19-3
+ - Do not join threads not started, fix up fake backend (csnyder@redhat.com)
+ - 1439317: Ensure reports are still sent despite duplicate configurations
+diff --git a/virtwho/manager/subscriptionmanager/subscriptionmanager.py b/virtwho/manager/subscriptionmanager/subscriptionmanager.py
+index df8638c..82b2a17 100644
+--- a/virtwho/manager/subscriptionmanager/subscriptionmanager.py
++++ b/virtwho/manager/subscriptionmanager/subscriptionmanager.py
+@@ -46,6 +46,7 @@ STATE_MAPPING = {
+     'FAILED': AbstractVirtReport.STATE_FAILED,
+     'RUNNING': AbstractVirtReport.STATE_PROCESSING,
+     'WAITING': AbstractVirtReport.STATE_PROCESSING,
++    'CREATED': AbstractVirtReport.STATE_PROCESSING,
+ }
+ 
+ 
+diff --git a/virtwho/virt/esx/esx.py b/virtwho/virt/esx/esx.py
+index c5f2d7f..5d16331 100644
+--- a/virtwho/virt/esx/esx.py
++++ b/virtwho/virt/esx/esx.py
+@@ -228,6 +228,11 @@ class Esx(virt.Virt):
+     def _format_hostname(self, host, domain):
+         return u'{0}.{1}'.format(host, domain)
+ 
++    def stop(self):
++        # We need to ensure that when we stop the thread, we clean up and exit the wait
++        self.cleanup()
++        super(Esx, self).stop()
++
+     def cleanup(self):
+         self._cancel_wait()
+ 
+diff --git a/virtwho/virt/rhevm/rhevm.py b/virtwho/virt/rhevm/rhevm.py
+index 36b2667..e9991f0 100644
+--- a/virtwho/virt/rhevm/rhevm.py
++++ b/virtwho/virt/rhevm/rhevm.py
+@@ -60,6 +60,7 @@ class RhevM(virt.Virt):
+                                     interval=interval,
+                                     oneshot=oneshot)
+         self.url = self.config.server
++        self.api_base = 'api'
+         if "//" not in self.url:
+             self.url = "//" + self.config.server
+         parsed = urlparse.urlsplit(self.url, "https")
+@@ -89,18 +90,13 @@ class RhevM(virt.Virt):
+         """
+         Builds the URL's based on Rhev version
+         """
+-        clusters_endpoint = 'clusters'
+-        hosts_endpoint = 'hosts'
+-        vms_endpoint = 'vms'
++        clusters_endpoint = '/clusters'
++        hosts_endpoint = '/hosts'
++        vms_endpoint = '/vms'
+ 
+-        if self.major_version == "4":
+-            api_base = 'ovirt-engine/api/'
+-        else:
+-            api_base = 'api/'
+-
+-        self.clusters_url = urlparse.urljoin(self.url, api_base + clusters_endpoint)
+-        self.hosts_url = urlparse.urljoin(self.url, api_base + hosts_endpoint)
+-        self.vms_url = urlparse.urljoin(self.url, api_base + vms_endpoint)
++        self.clusters_url = urlparse.urljoin(self.url, self.api_base + clusters_endpoint)
++        self.hosts_url = urlparse.urljoin(self.url, self.api_base + hosts_endpoint)
++        self.vms_url = urlparse.urljoin(self.url, self.api_base + vms_endpoint)
+ 
+     def get_version(self):
+         """
+@@ -109,12 +105,14 @@ class RhevM(virt.Virt):
+         try:
+             headers = dict()
+             headers['Version'] = '3'
+-            response = requests.get(urlparse.urljoin(self.url, 'api'),
++            # We will store the api_base that seems to work and use that for future requests
++            response = requests.get(urlparse.urljoin(self.url, self.api_base),
+                                     auth=self.auth,
+                                     headers=headers,
+                                     verify=False)
+-            if response.status_code == 404 and 'ovirt-engine' not in self.url:
+-                response = requests.get(urlparse.urljoin(self.url, 'ovirt-engine/api'),
++            if response.status_code == 404:
++                self.api_base = 'ovirt-engine/api'
++                response = requests.get(urlparse.urljoin(self.url, self.api_base),
+                                         auth=self.auth,
+                                         headers=headers,
+                                         verify=False)
+@@ -218,7 +216,10 @@ class RhevM(virt.Virt):
+ 
+             sockets = host.find('cpu').find('topology').get('sockets')
+             if not sockets:
+-                sockets = host.find('cpu').find('topology').find('sockets').text
++                try:
++                    sockets = host.find('cpu').find('topology').find('sockets').text
++                except AttributeError:
++                    sockets = "unknown"
+ 
+             facts = {
+                 virt.Hypervisor.CPU_SOCKET_FACT: sockets,
+diff --git a/virtwho/virt/virt.py b/virtwho/virt/virt.py
+index 2b57f95..9cf6516 100644
+--- a/virtwho/virt/virt.py
++++ b/virtwho/virt/virt.py
+@@ -394,9 +394,10 @@ class IntervalThread(Thread):
+                     self._internal_terminate_event.set()
+                     return
+ 
++                if has_error:
++                    self._send_data(ErrorReport(self.config))
++
+                 if self._oneshot:
+-                    if has_error:
+-                        self._send_data(ErrorReport(self.config))
+                     self.logger.debug("Thread '%s' stopped after running once",
+                                       self.config.name)
+                     self._internal_terminate_event.set()
+@@ -449,6 +450,7 @@ class DestinationThread(IntervalThread):
+         """
+         if not isinstance(source_keys, list):
+             raise ValueError("Source keys must be a list")
++        self.is_initial_run = True
+         self.source_keys = source_keys
+         self.last_report_for_source = {}  # Source_key to hash of last report
+         self.options = options
+@@ -478,20 +480,53 @@ class DestinationThread(IntervalThread):
+         Gets the latest report from the source for each source_key
+         @return: dict
+         """
++        if self.is_initial_run:
++            return self._get_data_initial()
++        return self._get_data_common(self.source_keys)
++
++    def _get_data_common(self, source_keys, ignore_duplicates=True, log_missing_reports=True):
+         reports = {}
+-        for source_key in self.source_keys:
++        for source_key in source_keys:
+             report = self.source.get(source_key, NotSetSentinel)
+ 
+             if report is None or report is NotSetSentinel:
+-                self.logger.debug("No report available for source: %s" %
+-                                  source_key)
++                if log_missing_reports:
++                    self.logger.debug("No report available for source: %s" %
++                                      source_key)
+                 continue
+-            if report.hash == self.last_report_for_source.get(source_key, None):
++            if ignore_duplicates and report.hash == self.last_report_for_source.get(source_key,
++                                                                                    None):
+                 self.logger.debug('Duplicate report found, ignoring')
+                 continue
+             reports[source_key] = report
+         return reports
+ 
++    def _get_data_initial(self):
++        """
++        Waits for each source in self.source_keys to have a value returned from the datastore. This
++        does not check to see if the data has been previously sent. This method will wait for a
++        maximum of the self.interval period of time, then return whatever it has gathered thus far.
++        If data for each source key is gathered before the interval has expired, this method will
++        return.
++        @return: dict
++        """
++        reports = {}
++        while not reports and not self.is_terminated():
++            source_keys_remaining = set(self.source_keys)
++            time_waited = 0
++            while len(source_keys_remaining) > 0 and time_waited < self.interval and not self.is_terminated():
++                found_reports = self._get_data_common(source_keys_remaining,
++                                                      ignore_duplicates=False,
++                                                      log_missing_reports=False)
++                reports.update(found_reports)
++                source_keys_remaining.difference_update(found_reports.keys())
++                if len(source_keys_remaining) > 0:
++                    sleep_time = 1
++                    time.sleep(sleep_time)
++                    time_waited += sleep_time
++        self.is_initial_run = False
++        return reports
++
+     def _send_data(self, data_to_send):
+         """
+         Processes the data_to_send and sends it using the dest object.

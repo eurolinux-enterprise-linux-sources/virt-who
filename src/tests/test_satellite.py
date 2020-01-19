@@ -1,4 +1,3 @@
-from __future__ import print_function, absolute_import
 """
 Test for Satellite module, part of virt-who
 
@@ -25,19 +24,18 @@ import threading
 import tempfile
 import pickle
 import shutil
-from six.moves import xmlrpc_client
-from six.moves.xmlrpc_server import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
+import xmlrpclib
+from SimpleXMLRPCServer import SimpleXMLRPCServer, SimpleXMLRPCRequestHandler
 from binascii import hexlify
-from mock import Mock, MagicMock, patch
+from mock import MagicMock, patch
 
 from base import TestBase
 
-from virtwho.config import DestinationToSourceMapper, EffectiveConfig, ConfigSection,\
-    parse_file, Satellite5DestinationInfo, VirtConfigSection
+from virtwho.config import Config, ConfigManager
 from virtwho.manager import Manager
 from virtwho.manager.satellite import Satellite, SatelliteError
 from virtwho.virt import Guest, Hypervisor, HostGuestAssociationReport
-from virtwho.parser import parse_options
+from virtwho.parser import parseOptions
 from virtwho import password
 
 
@@ -91,7 +89,7 @@ class FakeSatellite(SimpleXMLRPCServer):
 
     def virt_notify(self, system_id, plan):
         if system_id != TEST_SYSTEM_ID:
-            raise xmlrpc_client.Fault(-9, "Wrong system id")
+            raise xmlrpclib.Fault(-9, "Wrong system id")
 
         if plan[0] != [0, 'exists', 'system', {'uuid': '0000000000000000', 'identity': 'host'}]:
             raise Exception("Wrong value for virt_notify: invalid format of first entry")
@@ -120,7 +118,7 @@ class FakeSatellite(SimpleXMLRPCServer):
                 'id': 42
             }
         else:
-            raise xmlrpc_client.Fault(faultCode=-210, faultString='Not found')
+            raise xmlrpclib.Fault(faultCode=-210, faultString='Not found')
 
     def create_channel(self, session, label, name, summary, archLabel, parentLabel):
         assert session == self.AUTH_TOKEN
@@ -135,6 +133,13 @@ class FakeSatellite(SimpleXMLRPCServer):
         assert session == self.AUTH_TOKEN
         return dict(org_id=101)
 
+class Options(object):
+    def __init__(self, server, username, password):
+        self.sat_server = server
+        self.sat_username = username
+        self.sat_password = password
+
+
 xvirt = type("", (), {'CONFIG_TYPE': 'xxx'})()
 
 
@@ -142,26 +147,15 @@ class TestSatellite(TestBase):
     mapping = {
         'hypervisors': [
             Hypervisor('host-1', [
-                Guest('guest1-1', xvirt.CONFIG_TYPE, Guest.STATE_RUNNING),
-                Guest('guest1-2', xvirt.CONFIG_TYPE, Guest.STATE_SHUTOFF)
+                Guest('guest1-1', xvirt, Guest.STATE_RUNNING),
+                Guest('guest1-2', xvirt, Guest.STATE_SHUTOFF)
             ]),
             Hypervisor('host-2', [
-                Guest('guest2-1', xvirt.CONFIG_TYPE, Guest.STATE_RUNNING),
-                Guest('guest2-2', xvirt.CONFIG_TYPE, Guest.STATE_SHUTOFF),
-                Guest('guest2-3', xvirt.CONFIG_TYPE, Guest.STATE_RUNNING)
+                Guest('guest2-1', xvirt, Guest.STATE_RUNNING),
+                Guest('guest2-2', xvirt, Guest.STATE_SHUTOFF),
+                Guest('guest2-3', xvirt, Guest.STATE_RUNNING)
             ])
         ]
-    }
-
-    # Used as the default configuration
-    # Override in other tests if need be
-    default_config_args = {
-        'type': 'libvirt',
-        'hypervisor_id': 'uuid',
-        'simplified_vim': True,
-        'sat_server': "http://localhost:%s" % TEST_PORT,
-        'sat_username': 'username',
-        'sat_password': 'password',
     }
 
     @classmethod
@@ -176,52 +170,43 @@ class TestSatellite(TestBase):
         cls.fake_server.shutdown()
 
     def test_wrong_server(self):
-        options = Mock()
+        options = Options("wrong_server", "abc", "def")
         s = Satellite(self.logger, options)
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
-        d['sat_server'] = "wrong_server"
-        d['sat_username'] = "abc"
-        d['sat_password'] = "def"
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         self.assertRaises(SatelliteError, s.hypervisorCheckIn, report, options)
 
     def test_wrong_username(self):
-        options = Mock()
+        options = Options("http://localhost:%s" % TEST_PORT, "wrong", "password")
         options.force_register = True
         s = Satellite(self.logger, options)
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
-        d['sat_server'] = "http://localhost:%s" % TEST_PORT
-        d['sat_username'] = "wrong"
-        d['sat_password'] = "password"
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         self.assertRaises(SatelliteError, s.hypervisorCheckIn, report, options)
 
     def test_wrong_password(self):
-        options = Mock()
+        options = Options("http://localhost:%s" % TEST_PORT, "username", "wrong")
         options.force_register = True
         s = Satellite(self.logger, options)
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
-        d['sat_server'] = "http://localhost:%s" % TEST_PORT
-        d['sat_username'] = "username"
-        d['sat_password'] = "wrong"
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         self.assertRaises(SatelliteError, s.hypervisorCheckIn, report, options)
 
     def test_new_system(self):
-        options = Mock()
+        options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
         options.force_register = True
         s = Satellite(self.logger, options)
 
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         s.hypervisorCheckIn(report, options)
 
-    def test_hypervisor_checkin(self):
-        options = Mock()
+    def test_hypervisorCheckIn(self):
+        options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
         options.force_register = True
         s = Satellite(self.logger, options)
 
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         result = s.hypervisorCheckIn(report, options)
         self.assertTrue("failedUpdate" in result)
@@ -235,12 +220,12 @@ class TestSatellite(TestBase):
         pickle.dump({'system_id': TEST_SYSTEM_ID}, f)
         f.close()
 
-        options = Mock()
+        options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
         s = Satellite(self.logger, options)
 
         s.HYPERVISOR_SYSTEMID_FILE = filename.replace(TEST_SYSTEM_ID, '%s')
 
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         result = s.hypervisorCheckIn(report, options)
         self.assertTrue("failedUpdate" in result)
@@ -255,11 +240,11 @@ class TestSatellite(TestBase):
         with os.fdopen(temp, "wb") as f:
             pickle.dump({'system_id': system_id}, f)
 
-        options = Mock()
+        options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
         s = Satellite(self.logger, options)
 
         s.HYPERVISOR_SYSTEMID_FILE = filename.replace(system_id, '%s')
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
+        config = Config('test', 'libvirt')
         mapping = {
             'hypervisors': [
                 Hypervisor(system_id, [])
@@ -272,12 +257,11 @@ class TestSatellite(TestBase):
         self.assertEqual(data['system_id'], TEST_SYSTEM_ID)
 
     def test_creating_channel(self):
-        # TODO Remove Options entirely
-        options = Mock()
+        options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
         options.force_register = True
         s = Satellite(self.logger, options)
 
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         result = s.hypervisorCheckIn(report, options)
         self.assertTrue(self.fake_server.channel_created)
@@ -285,12 +269,12 @@ class TestSatellite(TestBase):
         self.assertTrue("created" in result)
 
     def test_using_existing_channel(self):
-        options = Mock()
+        options = Options("http://localhost:%s" % TEST_PORT, "username", "password")
         options.force_register = True
         s = Satellite(self.logger, options)
         self.fake_server.channel_created = True
 
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
+        config = Config('test', 'libvirt')
         report = HostGuestAssociationReport(config, self.mapping)
         result = s.hypervisorCheckIn(report, options)
         self.assertTrue(self.fake_server.channel_created)
@@ -298,9 +282,9 @@ class TestSatellite(TestBase):
         self.assertTrue("created" in result)
 
     def test_per_config_options(self):
-        options = Mock()
+        options = Options(None, None, None)
         options.force_register = True
-        config, d = self.create_fake_config('test', **TestSatellite.default_config_args)
+        config = Config('test', 'libvirt', sat_server="http://localhost:%s" % TEST_PORT, sat_username='username', sat_password='password')
         s = Satellite(self.logger, options)
 
         report = HostGuestAssociationReport(config, self.mapping)
@@ -311,23 +295,16 @@ class TestSatellite(TestBase):
 
     @patch('virtwho.password.Password._can_write')
     def test_per_config_options_encrypted(self, can_write):
-        options = Mock()
+        options = Options(None, None, None)
         options.force_register = True
         can_write.return_value = True
         with tempfile.NamedTemporaryFile() as tmp:
             password.Password.KEYFILE = tmp.name
-            config_dict = {
-                "sat_server": "http://localhost:%s" % TEST_PORT,
-                "sat_username": "username",
-                "sat_encrypted_password": hexlify(password.Password.encrypt('password')),
-                "type": "libvirt",
-            }
-            config = VirtConfigSection.from_dict(config_dict, 'test', None)
-            config.validate()
-            dests = DestinationToSourceMapper.parse_dests_from_dict(config._values)
-            self.assertEqual(len(dests), 1)
-            dest_info = dests.pop()
-            s = Manager.fromInfo(self.logger, options, dest_info)
+            config = Config('test', 'libvirt',
+                            sat_server="http://localhost:%s" % TEST_PORT,
+                            sat_username='username',
+                            sat_encrypted_password=hexlify(password.Password.encrypt('password')))
+            s = Manager.fromOptions(self.logger, options, config)
             self.assertTrue(isinstance(s, Satellite))
             report = HostGuestAssociationReport(config, self.mapping)
             result = s.hypervisorCheckIn(report, options)
@@ -337,14 +314,6 @@ class TestSatellite(TestBase):
 
 
 class TestSatelliteConfig(TestBase):
-
-    def setUp(self):
-        self.config_dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.config_dir)
-        conf_dir_patch = patch('virtwho.config.VW_CONF_DIR', self.config_dir)
-        conf_dir_patch.start()
-        self.addCleanup(conf_dir_patch.stop)
-
     def test_satellite_config_env(self):
         os.environ = {
             "VIRTWHO_SATELLITE": '1',
@@ -354,14 +323,10 @@ class TestSatelliteConfig(TestBase):
             "VIRTWHO_LIBVIRT": '1'
         }
         sys.argv = ["virt-who"]
-        logger, effective_config = parse_options()
-        config_manager = DestinationToSourceMapper(effective_config)
-        # Again there should only be one config parsed out (and one dest)
-        self.assertEqual(len(config_manager.configs), 1)
-        self.assertEqual(len(config_manager.dests), 1)
-        dest_info = config_manager.dests.pop()
-        self.assertTrue(isinstance(dest_info, Satellite5DestinationInfo))
-        manager = Manager.fromInfo(self.logger, effective_config, dest_info)
+        logger, options = parseOptions()
+        config = Config("env/cmdline", options.virtType, defaults={}, **options)
+        config.checkOptions(logger)
+        manager = Manager.fromOptions(logger, options, config)
         self.assertTrue(isinstance(manager, Satellite))
 
     def test_satellite_config_cmd(self):
@@ -371,43 +336,25 @@ class TestSatelliteConfig(TestBase):
                     "--satellite-username=username",
                     "--satellite-password=password",
                     "--libvirt"]
-        logger, effective_config = parse_options()
-        config_manager = DestinationToSourceMapper(effective_config)
-        # Again there should only be one config parsed out (and one dest)
-        self.assertEqual(len(config_manager.configs), 1)
-        self.assertEqual(len(config_manager.dests), 1)
-        dest_info = config_manager.dests.pop()
-        self.assertTrue(isinstance(dest_info, Satellite5DestinationInfo))
-        manager = Manager.fromInfo(self.logger, effective_config, dest_info)
+        logger, options = parseOptions()
+        config = Config("env/cmdline", options.virtType, defaults={}, **options)
+        config.checkOptions(logger)
+        manager = Manager.fromOptions(logger, options, config)
         self.assertTrue(isinstance(manager, Satellite))
 
     def test_satellite_config_file(self):
-        # Username and password are required for a valid sat5 destination
-        with open(os.path.join(self.config_dir, "test.conf"), "w") as f:
+        config_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, config_dir)
+        with open(os.path.join(config_dir, "test.conf"), "w") as f:
             f.write("""
 [test]
 type=libvirt
 sat_server=sat.example.com
-sat_username=sat_username
-sat_password=sat_password
 """)
-        conf = parse_file(os.path.join(self.config_dir, "test.conf"))
-        effective_config = EffectiveConfig()
-        conf_values = conf.pop("test")
-        effective_config["test"] = ConfigSection.from_dict(
-            conf_values,
-            "test",
-            effective_config
-        )
-        config_manager = DestinationToSourceMapper(effective_config)
+
+        config_manager = ConfigManager(self.logger, config_dir)
         self.assertEqual(len(config_manager.configs), 1)
-        # There should only be one destination detected
-        self.assertEqual(len(config_manager.dests), 1)
-        # Which should be a Satellite5DestinationInfo
-        dest_info = config_manager.dests.pop()
-        self.assertTrue(isinstance(dest_info, Satellite5DestinationInfo), 'The destination info '
-                                                                          'we got was not of the '
-                                                                          'expected type')
-        manager = Manager.fromInfo(self.logger, effective_config, dest_info)
+        config = config_manager.configs[0]
+        manager = Manager.fromOptions(self.logger, MagicMock(), config)
         self.assertTrue(isinstance(manager, Satellite))
-        self.assertEqual(dest_info.sat_server, 'sat.example.com')
+        self.assertEqual(config.sat_server, 'sat.example.com')

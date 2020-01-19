@@ -1,4 +1,3 @@
-from __future__ import print_function
 """
 Test for the log module of virt-who.
 
@@ -20,14 +19,11 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 """
 from mock import patch, Mock, sentinel
 import threading
-import six
-from six.moves.queue import Queue
+from multiprocessing import Queue
 
 from base import TestBase
 
 from virtwho import log
-
-from stubs import StubEffectiveConfig
 
 
 class TestLog(TestBase):
@@ -60,24 +56,20 @@ class TestLog(TestBase):
         queueLogger.logger.handlers = []
         mockQueueLogger = Mock(wraps=queueLogger)
         getQueueLogger.return_value = mockQueueLogger
-        conf_values = {
-            'global': {
-                'debug': False,
-                'background': True,
-                'log_file': log.DEFAULT_LOG_FILE,
-                'log_dir': log.DEFAULT_LOG_DIR,
-                'log_per_config': False
-            }
-        }
-        config = StubEffectiveConfig(conf_values)
-        log.init(config)
+        options = Mock()
+        options.debug = False
+        options.background = True
+        options.log_file = log.DEFAULT_LOG_FILE
+        options.log_dir = log.DEFAULT_LOG_DIR
+        options.log_per_config = False
+        log.init(options)
         main_logger = log.getLogger(name='main')
         self.assertTrue(main_logger.name == 'virtwho.main')
         self.assertTrue(len(main_logger.handlers) == 1)
         self.assertTrue(isinstance(main_logger.handlers[0], log.QueueHandler))
         queue_handlers = queueLogger.logger.handlers
-        self.assertTrue(len(queue_handlers) == 2)
-        self.assertEqual(queue_handlers[0].baseFilename, '%s/%s' % (log.DEFAULT_LOG_DIR, log.DEFAULT_LOG_FILE))
+        self.assertTrue(len(queue_handlers) == 1)
+        self.assertEquals(queue_handlers[0].baseFilename, '%s/%s' % (log.DEFAULT_LOG_DIR, log.DEFAULT_LOG_FILE))
 
     @patch('virtwho.log.Logger.get_queue_logger')
     @patch('virtwho.log.Logger.get_file_handler')
@@ -87,22 +79,24 @@ class TestLog(TestBase):
         mockQueueLogger = Mock(wraps=queueLogger)
         getQueueLogger.return_value = mockQueueLogger
 
-        options = {
-            'global': {
-                'debug': False,
-                'background': True,
-                'log_per_config': True,
-                'log_dir': '/test/',
-                'log_file': 'test.log',
-            },
-        }
-        log.init(options)
-        test_logger = log.getLogger(config=options)
+        config = Mock()
+        config.name = 'test'
+        config.log_file = 'test.log'
+        config.log_dir = '/test/'
 
-        self.assertTrue(test_logger.name == 'virtwho.test_log')
+        options = Mock()
+        options.debug = False
+        options.background = True
+        options.log_per_config = True
+        options.log_dir = ''
+        options.log_file = ''
+        log.init(options)
+        test_logger = log.getLogger(name='test', config=config)
+
+        self.assertTrue(test_logger.name == 'virtwho.test')
         self.assertTrue(len(test_logger.handlers) == 1)
-        self.assertTrue(len(queueLogger.logger.handlers) == 2)
-        getFileHandler.assert_called_with(name=test_logger.name, config=options)
+        self.assertTrue(len(queueLogger.logger.handlers) == 1)
+        getFileHandler.assert_called_with(name=test_logger.name, config=config)
 
     @patch('os.path.isdir')
     @patch('logging.FileHandler._open')
@@ -111,9 +105,9 @@ class TestLog(TestBase):
         isdir.return_value = True
         filtername = 'test'
         fileHandler = log.Logger.get_file_handler(filtername)
-        self.assertEqual(fileHandler.baseFilename, '%s/%s' % (log.DEFAULT_LOG_DIR, log.DEFAULT_LOG_FILE))
-        self.assertEqual(len(fileHandler.filters), 1)
-        self.assertEqual(fileHandler.filters[0].name, filtername)
+        self.assertEquals(fileHandler.baseFilename, '%s/%s' % (log.DEFAULT_LOG_DIR, log.DEFAULT_LOG_FILE))
+        self.assertEquals(len(fileHandler.filters), 1)
+        self.assertEquals(fileHandler.filters[0].name, filtername)
 
     @patch('os.path.isdir')
     @patch('logging.FileHandler._open')
@@ -122,18 +116,19 @@ class TestLog(TestBase):
 
         # Ensure we don't try to make a directory
         isdir.return_value = True
+        options = Mock()
         filtername = 'test'
-        log_file = 'test.log'
-        log_dir = '/nonexistant/'
+        options.log_file = 'test.log'
+        options.log_dir = '/nonexistant/'
 
-        log.Logger.initialize(log_file=log_file, log_dir=log_dir)
+        log.Logger.initialize(options)
         fileHandler = log.Logger.get_file_handler(filtername)
-        self.assertEqual(fileHandler.baseFilename, log_dir + log_file)
+        self.assertEquals(fileHandler.baseFilename, options.log_dir + options.log_file)
 
 
 class TestQueueLogger(TestBase):
 
-    @patch('virtwho.log.Queue')
+    @patch('multiprocessing.queues.Queue')
     @patch('logging.getLogger')
     def test_queue_logger(self, getLogger, queue):
         fake_queue = sentinel.queue
@@ -147,15 +142,8 @@ class TestQueueLogger(TestBase):
         self.assertTrue(isinstance(queueLogger._logging_thread,
                                    threading.Thread))
         thread = queueLogger._logging_thread
-
-        target_attr = '_target'
-        args_attr = '_args'
-        if not six.PY3:
-            target_attr = '_Thread_' + target_attr
-            args_attr = '_Thread_' + args_attr
-
-        self.assertTrue(getattr(thread, target_attr) == log.QueueLogger._log)
-        self.assertTrue(getattr(thread, args_attr) == (logger, fake_queue))
+        self.assertTrue(thread.__dict__['_Thread__target'] == log.QueueLogger._log)
+        self.assertTrue(thread.__dict__['_Thread__args'] == (logger, fake_queue))
         self.assertTrue(queueLogger.queue == fake_queue)
         self.assertTrue(queueLogger.logger == logger)
         self.assertTrue(queueLogger.name == name)

@@ -1,6 +1,4 @@
-# -*- coding: utf-8 -*-
-from __future__ import absolute_import, print_function
 
-from .vdsm import Vdsm
+from vdsm import Vdsm
 
 __all__ = ['Vdsm']

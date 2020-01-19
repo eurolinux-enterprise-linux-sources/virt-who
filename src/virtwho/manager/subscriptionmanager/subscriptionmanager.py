@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-from __future__ import print_function
 """
 Module for communication with subscription-manager, part of virt-who
 
@@ -22,13 +20,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import os
 import json
-from six.moves.http_client import BadStatusLine
+from httplib import BadStatusLine
 
 import rhsm.connection as rhsm_connection
 import rhsm.certificate as rhsm_certificate
 import rhsm.config as rhsm_config
 
-from virtwho.config import NotSetSentinel
 from virtwho.manager import Manager, ManagerError, ManagerFatalError, ManagerThrottleError
 from virtwho.virt import AbstractVirtReport
 
@@ -48,87 +45,29 @@ STATE_MAPPING = {
     'FAILED': AbstractVirtReport.STATE_FAILED,
     'RUNNING': AbstractVirtReport.STATE_PROCESSING,
     'WAITING': AbstractVirtReport.STATE_PROCESSING,
-    'CREATED': AbstractVirtReport.STATE_PROCESSING,
 }
 
 
-class NamedOptions(object):
-    """
-    Object used for compatibility with RHSM
-    """
-    pass
-
-
 class SubscriptionManager(Manager):
-    sm_type = "sam"
+    smType = "sam"
 
     """ Class for interacting subscription-manager. """
     def __init__(self, logger, options):
         self.logger = logger
         self.options = options
         self.cert_uuid = None
-        self.rhsm_config = None
-        self.cert_file = None
-        self.key_file = None
+
+        self.rhsm_config = rhsm_config.initConfig(rhsm_config.DEFAULT_CONFIG_PATH)
         self.readConfig()
-        self.connection = None
 
     def readConfig(self):
         """ Parse rhsm.conf in order to obtain consumer
             certificate and key paths. """
-        self.rhsm_config = rhsm_config.initConfig(
-            rhsm_config.DEFAULT_CONFIG_PATH)
-        consumer_cert_dir = self.rhsm_config.get("rhsm", "consumerCertDir")
+        consumerCertDir = self.rhsm_config.get("rhsm", "consumerCertDir")
         cert = 'cert.pem'
         key = 'key.pem'
-        self.cert_file = os.path.join(consumer_cert_dir, cert)
-        self.key_file = os.path.join(consumer_cert_dir, key)
-
-    def _check_owner_lib(self, kwargs, config):
-        """
-        Try to check values of env and owner. These values has to be
-        equal to values obtained from Satellite server.
-        :param kwargs: dictionary possibly containing valid username and
-                       password used for connection to rhsm
-        :param config: Configuration of virt-who
-        :return: None
-        """
-
-        if config is None:
-            return
-
-        # Check 'owner' and 'env' only in situation, when these values
-        # are set and rhsm_username and rhsm_password are not set
-        if 'username' not in kwargs and 'password' not in kwargs and \
-                'owner' in config.keys() and 'env' in config.keys():
-            pass
-        else:
-            return
-
-        uuid = self.uuid()
-        consumer = self.connection.getConsumer(uuid)
-
-        if 'environment' in consumer:
-            environment = consumer['environment']
-        else:
-            return
-
-        if environment:
-            environment_name = environment['name']
-            owner = self.connection.getOwner(uuid)
-            owner_id = owner['key']
-
-            if config['owner'] != owner_id:
-                raise ManagerError(
-                    "Cannot send data to: %s, because owner from configuration: %s is different" %
-                    (owner_id, config['owner'])
-                )
-
-            if config['env'] != environment_name:
-                raise ManagerError(
-                    "Cannot send data to: %s, because Satellite env: %s differs from configuration: %s" %
-                    (owner_id, environment_name, config['env'])
-                )
+        self.cert_file = os.path.join(consumerCertDir, cert)
+        self.key_file = os.path.join(consumerCertDir, key)
 
     def _connect(self, config=None):
         """ Connect to the subscription-manager. """
@@ -143,43 +82,39 @@ class SubscriptionManager(Manager):
             'proxy_password': self.rhsm_config.get('server', 'proxy_password'),
             'insecure': self.rhsm_config.get('server', 'insecure')
         }
-        kwargs_to_config = {
-            'host': 'rhsm_hostname',
-            'ssl_port': 'rhsm_port',
-            'handler': 'rhsm_prefix',
-            'proxy_hostname': 'rhsm_proxy_hostname',
-            'proxy_port': 'rhsm_proxy_port',
-            'proxy_user': 'rhsm_proxy_user',
-            'proxy_password': 'rhsm_proxy_password',
-            'insecure': 'rhsm_insecure'
-        }
 
         rhsm_username = None
         rhsm_password = None
 
         if config:
-            try:
-                rhsm_username = config['rhsm_username']
-                rhsm_password = config['rhsm_password']
-            except KeyError:
-                pass
-
-            if rhsm_username == NotSetSentinel:
-                rhsm_username = None
-            if rhsm_password == NotSetSentinel:
-                rhsm_password = None
+            rhsm_username = config.rhsm_username
+            rhsm_password = config.rhsm_password
 
             # Testing for None is necessary, it might be an empty string
-            for key, value in kwargs.items():
-                try:
-                    from_config = config[kwargs_to_config[key]]
-                    if from_config is not NotSetSentinel and from_config is \
-                            not None:
-                        if key is 'ssl_port':
-                            from_config = int(from_config)
-                        kwargs[key] = from_config
-                except KeyError:
-                    continue
+
+            if config.rhsm_hostname is not None:
+                kwargs['host'] = config.rhsm_hostname
+
+            if config.rhsm_port is not None:
+                kwargs['ssl_port'] = int(config.rhsm_port)
+
+            if config.rhsm_prefix is not None:
+                kwargs['handler'] = config.rhsm_prefix
+
+            if config.rhsm_proxy_hostname is not None:
+                kwargs['proxy_hostname'] = config.rhsm_proxy_hostname
+
+            if config.rhsm_proxy_port is not None:
+                kwargs['proxy_port'] = config.rhsm_proxy_port
+
+            if config.rhsm_proxy_user is not None:
+                kwargs['proxy_user'] = config.rhsm_proxy_user
+
+            if config.rhsm_proxy_password is not None:
+                kwargs['proxy_password'] = config.rhsm_proxy_password
+
+            if config.rhsm_insecure is not None:
+                kwargs['insecure'] = config.rhsm_insecure
 
         if rhsm_username and rhsm_password:
             self.logger.debug("Authenticating with RHSM username %s", rhsm_username)
@@ -196,17 +131,9 @@ class SubscriptionManager(Manager):
         self.connection = rhsm_connection.UEPConnection(**kwargs)
         try:
             if not self.connection.ping()['result']:
-                raise SubscriptionManagerError(
-                    "Unable to obtain status from server, UEPConnection is likely not usable."
-                )
-        except rhsm_connection.RateLimitExceededException as e:
-            raise ManagerThrottleError(e.retry_after)
+                raise SubscriptionManagerError("Unable to obtain status from server, UEPConnection is likely not usable.")
         except BadStatusLine:
             raise ManagerError("Communication with subscription manager interrupted")
-
-        self._check_owner_lib(kwargs, config)
-
-        return self.connection
 
     def sendVirtGuests(self, report, options=None):
         """
@@ -232,53 +159,60 @@ class SubscriptionManager(Manager):
         except rhsm_connection.GoneException:
             raise ManagerError("Communication with subscription manager failed: consumer no longer exists")
         except rhsm_connection.RateLimitExceededException as e:
-            raise ManagerThrottleError(e.retry_after)
+            retry_after = int(getattr(e, 'headers', {}).get('Retry-After', '60'))
+            raise ManagerThrottleError(retry_after)
         report.state = AbstractVirtReport.STATE_FINISHED
 
     def hypervisorCheckIn(self, report, options=None):
         """ Send hosts to guests mapping to subscription manager. """
-        connection = self._connect(report.config)
+        mapping = report.association
+        serialized_mapping = {}
 
-        is_async = self._is_rhsm_server_async(report, connection)
-        serialized_mapping = self._hypervisor_mapping(report, is_async, connection)
-        self.logger.debug("Host-to-guest mapping being sent to '{owner}': {mapping}".format(
-                          owner=report.config['owner'],
-                          mapping=json.dumps(serialized_mapping, indent=4)))
+        self._connect(report.config)
+        self.logger.debug("Checking if server has capability 'hypervisor_async'")
+        is_async = hasattr(self.connection, 'has_capability') and self.connection.has_capability('hypervisors_async')
+        if is_async and os.environ.get('VIRTWHO_DISABLE_ASYNC', '').lower() in ['1', 'yes', 'true']:
+            self.logger.info("Async reports are supported but explicitly disabled")
+            is_async = False
 
-        # All subclasses of ConfigSection use dictionary like notation,
-        # but RHSM uses attribute like notation
-        if options:
-            named_options = NamedOptions()
-            for key, value in options['global'].items():
-                setattr(named_options, key, value)
+        if is_async:
+            self.logger.debug("Server has capability 'hypervisors_async'")
+            # Transform the mapping into the async version
+            serialized_mapping = {'hypervisors': [h.toDict() for h in mapping['hypervisors']]}
+
         else:
-            named_options = None
+            self.logger.debug("Server does not have 'hypervisors_async' capability")
+            # Reformat the data from the mapping to make it fit with
+            # the old api.
+            for hypervisor in mapping['hypervisors']:
+                guests = [g.toDict() for g in hypervisor.guestIds]
+                serialized_mapping[hypervisor.hypervisorId] = guests
 
+        hypervisor_count = len(mapping['hypervisors'])
+        guest_count = sum(len(hypervisor.guestIds) for hypervisor in mapping['hypervisors'])
+        self.logger.info('Sending update in hosts-to-guests mapping for config '
+                         '"%s": %d hypervisors and %d guests found',
+                         report.config.name, hypervisor_count, guest_count)
+        self.logger.debug("Host-to-guest mapping: %s", json.dumps(serialized_mapping, indent=4))
         try:
             try:
-                result = self.connection.hypervisorCheckIn(
-                    report.config['owner'],
-                    report.config['env'],
-                    serialized_mapping,
-                    options=named_options)  # pylint:disable=unexpected-keyword-arg
+                result = self.connection.hypervisorCheckIn(report.config.owner, report.config.env, serialized_mapping, options=options)  # pylint:disable=unexpected-keyword-arg
             except TypeError:
                 # This is temporary workaround until the options parameter gets implemented
                 # in python-rhsm
-                self.logger.debug(
-                    "hypervisorCheckIn method in python-rhsm doesn't understand options parameter, ignoring"
-                )
-                result = self.connection.hypervisorCheckIn(report.config['owner'], report.config['env'], serialized_mapping)
+                self.logger.debug("hypervisorCheckIn method in python-rhsm doesn't understand options parameter, ignoring")
+                result = self.connection.hypervisorCheckIn(report.config.owner, report.config.env, serialized_mapping)
         except BadStatusLine:
             raise ManagerError("Communication with subscription manager interrupted")
         except rhsm_connection.RateLimitExceededException as e:
-            raise ManagerThrottleError(e.retry_after)
+            retry_after = int(getattr(e, 'headers', {}).get('Retry-After', '60'))
+            raise ManagerThrottleError(retry_after)
         except rhsm_connection.GoneException:
             raise ManagerError("Communication with subscription manager failed: consumer no longer exists")
         except rhsm_connection.ConnectionException as e:
             if hasattr(e, 'code'):
                 raise ManagerError("Communication with subscription manager failed with code %d: %s" % (e.code, str(e)))
             raise ManagerError("Communication with subscription manager failed: %s" % str(e))
-
         if is_async is True:
             report.state = AbstractVirtReport.STATE_PROCESSING
             report.job_id = result['id']
@@ -286,68 +220,14 @@ class SubscriptionManager(Manager):
             report.state = AbstractVirtReport.STATE_FINISHED
         return result
 
-    def _is_rhsm_server_async(self, report, connection=None):
-        """
-        Check if server has capability 'hypervisor_async'.
-        """
-        if connection is None:
-            self._connect(report.config)
-
-        self.logger.debug("Checking if server has capability 'hypervisor_async'")
-        is_async = hasattr(self.connection, 'has_capability') and self.connection.has_capability('hypervisors_async')
-
-        if is_async:
-            self.logger.debug("Server has capability 'hypervisors_async'")
-        else:
-            self.logger.debug("Server does not have 'hypervisors_async' capability")
-
-        return is_async
-
-    def _hypervisor_mapping(self, report, is_async, connection=None):
-        """
-        Return mapping of hypervisor
-        """
-        if connection is None:
-            self._connect(report.config)
-
-        mapping = report.association
-        serialized_mapping = {}
-        ids_seen = []
-
-        if is_async:
-            hosts = []
-            # Transform the mapping into the async version
-            for hypervisor in mapping['hypervisors']:
-                if hypervisor.hypervisorId in ids_seen:
-                    self.logger.warning("The hypervisor id '%s' is assigned to 2 different systems. "
-                        "Only one will be recorded at the server." % hypervisor.hypervisorId)
-                hosts.append(hypervisor.toDict())
-                ids_seen.append(hypervisor.hypervisorId)
-            serialized_mapping = {'hypervisors': hosts}
-        else:
-            # Reformat the data from the mapping to make it fit with
-            # the old api.
-            for hypervisor in mapping['hypervisors']:
-                if hypervisor.hypervisorId in ids_seen:
-                    self.logger.warning("The hypervisor id '%s' is assigned to 2 different systems. "
-                        "Only one will be recorded at the server." % hypervisor.hypervisorId)
-                guests = [g.toDict() for g in hypervisor.guestIds]
-                serialized_mapping[hypervisor.hypervisorId] = guests
-                ids_seen.append(hypervisor.hypervisorId)
-
-        return serialized_mapping
-
     def check_report_state(self, report):
-        # BZ 1554228
-        job_id = str(report.job_id)
+        job_id = report.job_id
         self._connect(report.config)
         self.logger.debug('Checking status of job %s', job_id)
         try:
             result = self.connection.getJob(job_id)
         except BadStatusLine:
             raise ManagerError("Communication with subscription manager interrupted")
-        except rhsm_connection.RateLimitExceededException as e:
-            raise ManagerThrottleError(e.retry_after)
         except rhsm_connection.ConnectionException as e:
             if hasattr(e, 'code'):
                 raise ManagerError("Communication with subscription manager failed with code %d: %s" % (e.code, str(e)))
@@ -360,13 +240,23 @@ class SubscriptionManager(Manager):
             self.logger.debug('Job %s not finished', job_id)
         else:
             # log completed job status
-            result_data = result.get('resultData', {})
-            if not result_data:
+            resultData = result.get('resultData', {})
+            if not resultData:
                 self.logger.warning("Job status report without resultData: %s", result)
                 return
-            for fail in result_data.get('failedUpdate', []):
+            for fail in resultData.get('failedUpdate', []):
                 self.logger.error("Error during update list of guests: %s", str(fail))
-            self.logger.debug("Number of mappings unchanged: %d", len(result_data.get('unchanged', [])))
+            for updated in resultData.get('updated', []):
+                guests = [x['guestId'] for x in updated['guestIds']]
+                self.logger.debug("Updated host %s with guests: [%s]",
+                                  updated['uuid'],
+                                  ", ".join(guests))
+            for created in resultData.get('created', []):
+                guests = [x['guestId'] for x in created['guestIds']]
+                self.logger.debug("Created host: %s with guests: [%s]",
+                                  created['uuid'],
+                                  ", ".join(guests))
+            self.logger.debug("Number of mappings unchanged: %d", len(resultData.get('unchanged', [])))
             self.logger.info("Mapping for config \"%s\" updated", report.config.name)
 
     def uuid(self):
