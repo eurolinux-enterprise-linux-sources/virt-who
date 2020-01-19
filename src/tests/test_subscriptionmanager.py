@@ -3,8 +3,6 @@ import os
 import sys
 import shutil
 import tempfile
-import pytest
-import six
 
 from mock import patch, Mock, DEFAULT, MagicMock, ANY
 
@@ -49,7 +47,7 @@ class TestSubscriptionManager(TestBase):
         cls.sm = SubscriptionManager(cls.logger, config)
         cls.sm.connection = MagicMock()
         cls.sm.connection.return_value.has_capability = MagicMock(return_value=False)
-        cls.sm.connection.return_value.getConsumer = MagicMock(return_value={})
+        cls.sm.connection.return_value.getConsumer = MagicMock(return_value={'environment': {'name': 'env'}})
         cls.sm.connection.return_value.getOwner = MagicMock(return_value={'key': 'owner'})
         cls.uep_connection = patch('rhsm.connection.UEPConnection', cls.sm.connection)
         cls.uep_connection.start()
@@ -71,7 +69,8 @@ class TestSubscriptionManager(TestBase):
 
     def test_hypervisorCheckIn(self):
         owner = "owner"
-        config = VirtConfigSection.from_dict({'type': 'libvirt', 'owner': owner}, 'test', None)
+        env = "env"
+        config = VirtConfigSection.from_dict({'type': 'libvirt', 'owner': owner, 'env': env}, 'test', None)
         # Ensure the data takes the proper for for the old API
         self.sm.connection.return_value.has_capability = MagicMock(return_value=False)
         self.sm.logger = MagicMock()
@@ -79,7 +78,7 @@ class TestSubscriptionManager(TestBase):
         self.sm.hypervisorCheckIn(report)
         self.sm.connection.hypervisorCheckIn.assert_called_with(
             owner,
-            '',
+            env,
             dict((host.hypervisorId, [g.toDict() for g in host.guestIds]) for host in self.mapping['hypervisors']),
             options=None)
         self.sm.logger.warning.assert_called_with("The hypervisor id '123' is assigned to 2 different systems. "
@@ -89,7 +88,8 @@ class TestSubscriptionManager(TestBase):
     # def test_hypervisorCheckInAsync(self):
     def test_hypervisorCheckInAsync(self, rhsmconnection):
         owner = 'owner'
-        config = VirtConfigSection.from_dict({'type': 'libvirt', 'owner': owner}, 'test', None)
+        env = 'env'
+        config = VirtConfigSection.from_dict({'type': 'libvirt', 'owner': owner, 'env': env}, 'test', None)
         # Ensure we try out the new API
         rhsmconnection.return_value.has_capability.return_value = True
         self.sm.logger = MagicMock()
@@ -98,7 +98,7 @@ class TestSubscriptionManager(TestBase):
         expected = {'hypervisors': [h.toDict() for h in self.mapping['hypervisors']]}
         self.sm.connection.hypervisorCheckIn.assert_called_with(
             'owner',
-            '',
+            'env',
             expected,
             options=None
         )
@@ -109,7 +109,7 @@ class TestSubscriptionManager(TestBase):
     @patch('rhsm.connection.UEPConnection')
     def test_job_status(self, rhsmconnection):
         rhsmconnection.return_value.has_capability.return_value = True
-        config = VirtConfigSection.from_dict({'type': 'libvirt', 'owner': 'owner'}, 'test', None)
+        config = VirtConfigSection.from_dict({'type': 'libvirt', 'owner': 'owner', 'env': 'env'}, 'test', None)
         report = HostGuestAssociationReport(config, self.mapping)
         self.sm.hypervisorCheckIn(report)
         rhsmconnection.return_value.getJob.return_value = {
@@ -161,7 +161,7 @@ class TestSubscriptionManagerConfig(TestBase):
         cls.sm = SubscriptionManager(cls.logger, options)
         cls.sm.connection = MagicMock()
         cls.sm.connection.return_value.has_capability = MagicMock(return_value=False)
-        cls.sm.connection.return_value.getConsumer = MagicMock(return_value={})
+        cls.sm.connection.return_value.getConsumer = MagicMock(return_value={'environment': {'name': 'env'}})
         cls.sm.connection.return_value.getOwner = MagicMock(return_value={'key': 'owner'})
         cls.uep_connection = patch('rhsm.connection.UEPConnection', cls.sm.connection)
         cls.uep_connection.start()
@@ -189,7 +189,6 @@ class TestSubscriptionManagerConfig(TestBase):
         manager = Manager.from_config(logger, config)
         self.assertTrue(isinstance(manager, SubscriptionManager))
 
-    @pytest.mark.skipif(not six.PY2, reason="test only runs with python 2 virt-who")
     def test_sm_config_cmd(self):
         os.environ = {}
         sys.argv = ["virt-who", "--sam", "--libvirt"]
@@ -208,6 +207,7 @@ class TestSubscriptionManagerConfig(TestBase):
 [test]
 type=libvirt
 owner=owner
+env=env
 rhsm_hostname=host
 rhsm_port=8080
 rhsm_prefix=prefix
@@ -218,7 +218,6 @@ rhsm_proxy_password=proxy_password
 rhsm_insecure=1
 rhsm_username=user
 rhsm_password=passwd
-rhsm_no_proxy=filter
 """)
 
         config_manager = DestinationToSourceMapper(init_config({}, {}, config_dir=config_dir))
@@ -240,9 +239,7 @@ rhsm_no_proxy=filter
             proxy_port='9090',
             proxy_user='proxy_user',
             proxy_password='proxy_password',
-            no_proxy='filter',
-            insecure='1',
-            correlation_id=manager.correlation_id)
+            insecure='1')
 
     @unittest.skip("skip until rhsm is fixed")
     @patch('rhsm.connection.RhsmProxyHTTPSConnection')
@@ -273,6 +270,7 @@ rhsm_no_proxy=filter
 [test]
 type=libvirt
 owner=owner
+env=env
 rhsm_hostname=host
 rhsm_port=8080
 rhsm_prefix=/prefix

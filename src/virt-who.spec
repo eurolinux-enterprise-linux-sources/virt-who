@@ -20,8 +20,10 @@
 
 
 Name:           virt-who
-Version:        0.24.7
+Version:        0.22.5
 Release:        %{release_number}%{?dist}
+
+
 
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
 
@@ -33,13 +35,7 @@ Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 BuildRequires:  %{python_ver}-devel
 BuildRequires:  %{python_ver}-setuptools
-BuildRequires:  PyYAML
-# rhel 8 has different naming going forward
-%if (0%{?rhel} && 0%{?rhel} >= 8)
-Requires:      platform-python-setuptools
-%else
-Requires:      %{python_ver}-setuptools
-%endif
+Requires:       %{python_ver}-setuptools
 # libvirt python required for libvirt support
 %if (0%{?rhel} && 0%{?rhel} > 7 || 0%{?fedora})
 Requires:       %{python_ver}-libvirt
@@ -66,7 +62,6 @@ Requires:       %{python_ver}-six
 # python-argparse is required for Python 2.6 on EL6
 %{?el6:Requires: python-argparse}
 Requires:       openssl
-Requires:       PyYAML
 
 %if %{use_systemd}
 %if %{use_python3}
@@ -168,115 +163,19 @@ fi
 
 
 %changelog
-* Mon Jun 17 2019 William Poteat <wpoteat@redhat.com> 0.24.7-1
-- 1718304: Fix issue when instance["BIOSGUID"] returns None
-  (phess@users.noreply.github.com)
-- 1472727: Log error, when encrypted password is missing; ENT-1344
-  (jhnidek@redhat.com)
-
-* Fri May 24 2019 William Poteat <wpoteat@redhat.com> 0.24.6-1
-- 1530290: Remove enviroment as an input variable for the hypervisor check in
-  (wpoteat@redhat.com)
-- 1523482: 1519704: Interval value set to empty string will revert to default
-  value (wpoteat@redhat.com)
-- 1522384: Log at debug level when config uses default entries
-  (wpoteat@redhat.com)
-- 1708524: update man page with kubevirt backend information
-  (piotr.kliczewski@gmail.com)
-- 1708534: add kubeconfig to template (piotr.kliczewski@gmail.com)
-- 1516209: Configuration should be deemed invalid when server is not specified
-  (wpoteat@redhat.com)
-- 1506167: Ignore new SIGHUP signals during signal handling
-  (jhnidek@redhat.com)
-- 1522661: Constrict is_hypervisor field to fake virt (wpoteat@redhat.com)
-
-* Wed Apr 17 2019 William Poteat <wpoteat@redhat.com> 0.24.5-1
-- 1695538: Provide support for hypervisor_id option
-  (piotr.kliczewski@gmail.com)
-- 1695519: use correct uuid in kubevirt report (piotr.kliczewski@gmail.com)
-
-* Wed Apr 03 2019 William Poteat <wpoteat@redhat.com> 0.24.4-1
-- 1667522: Omit ESX host from report when no hostname is present
-  (wpoteat@redhat.com)
-- 1693858: Send hardware uuid on every check in for system reconcilliation
-  (wpoteat@redhat.com)
-- kubevirt: provide user authentication (piotr.kliczewski@gmail.com)
-- 1486270: pass no_proxy from config files (wpoteat@redhat.com)
-- kubevirt: drop kubernetes and kubevirt dependencies
-  (piotr.kliczewski@gmail.com)
-- 1638250: Improved fix for http proxy issue (wpoteat@redhat.com)
-- Update releaser (wpoteat@redhat.com)
-
-* Wed Apr 03 2019 William Poteat <wpoteat@redhat.com>
-- 1667522: Omit ESX host from report when no hostname is present
-  (wpoteat@redhat.com)
-- 1693858: Send hardware uuid on every check in for system reconcilliation
-  (wpoteat@redhat.com)
-- kubevirt: provide user authentication (piotr.kliczewski@gmail.com)
-- 1486270: pass no_proxy from config files (wpoteat@redhat.com)
-- kubevirt: drop kubernetes and kubevirt dependencies
-  (piotr.kliczewski@gmail.com)
-- 1638250: Improved fix for http proxy issue (wpoteat@redhat.com)
-- Update releaser (wpoteat@redhat.com)
-
-* Fri Dec 21 2018 William Poteat <wpoteat@redhat.com> 0.24.2-1
-- 1657104: Remove references to removed command line options
-  (wpoteat@redhat.com)
-- Fixing kubevirt config path argument (piotr.kliczewski@gmail.com)
-- fix travis run (wpoteat@redhat.com)
-- 1650133: setuptools naming change (wpoteat@redhat.com)
-- 1638250: Proxy issue when https not specified (wpoteat@redhat.com)
-- Update branch definition for RHEL 8.0 branch (wpoteat@redhat.com)
-- ENT-896: Disable deprecated configuration options in python 3
-  (wpoteat@redhat.com)
-- 1637407: vCenter mapping info failure due to TypeError (wpoteat@redhat.com)
-
-* Mon Oct 29 2018 William Poteat <wpoteat@redhat.com> 0.24.1-1
-- Merge in changes from Fedora packaging (wpoteat@redhat.com)
-- ENT-826 Added correlation id to virt-who reports (nmoumoul@redhat.com)
-- Releaser addition for rhel-7.7 (wpoteat@redhat.com)
-- Install subscription-manager, not python-rhsm which is deprecated: - Removed
-  python-rhsm from the requirements, and added subscription-manager as
-  dependency. - Added some dependencies that travis requires to install
-  subscription-manager. (nmoumoul@redhat.com)
-
-* Wed Sep 19 2018 William Poteat <wpoteat@redhat.com> 0.24.0-1
-- Automatic commit of package [virt-who] release [0.22.2-1].
-  (wpoteat@redhat.com)
-- kubevirt: warn user that dependencies are missing
-  (piotr.kliczewski@gmail.com)
-- 1369634: Dont log proxy html errors for hyperv: - When hyperv gets an HTML
-  page as error response from a proxy, don't log the whole html, but try to
-  scrape the title off of it. - If scraping the title doesn't work, only log
-  the http error code. - Changed all variables named 'xml' to 'xml_doc' in
-  hyperv.py to avoid conflict with the new python keyword.
-  (nmoumoul@redhat.com)
-- 1599725: Handle job status report errors (nmoumoul@redhat.com)
-- 1557296: Warn of commented out lines prefixed with space/tab (ENT-606) - When
-  reading config files in python2, warn the user if a line continuation (starts
-  with space/tab) is followed by '#' (nmoumoul@redhat.com)
-- kubevirt: Ignore vmis in Scheduling (piotr.kliczewski@gmail.com)
-- kubevirt: Update config (piotr.kliczewski@gmail.com)
-- Print/log debug information about filtered hosts (jhnidek@redhat.com)
-- 1577954: Added config option filter_type; ENT-580 (jhnidek@redhat.com)
-- Changed info about how filter_host_parents/exclude_host_parents filters work
-  (ktordeur@redhat.com)
+* Wed Sep 12 2018 William Poteat <wpoteat@redhat.com> 0.22.5-1
 - 1387800: set name of ESX cluster properly; ENT-793 (jhnidek@redhat.com)
-- Add release entry for RHEL 8 (wpoteat@redhat.com)
-- template update (wpinheir@iroman.home)
-- template update (wpinheir@iroman.home)
+
+* Mon Aug 27 2018 William Poteat <wpoteat@redhat.com> 0.22.4-1
 - 1596041: Make python libvirt required (wpoteat@redhat.com)
-- updating RHV/RHEV/XenServer information (wpinheir@iroman.home)
-- 1581021: Decode error from unicode passwords (wpoteat@redhat.com)
-- 1510920: Change the choreography for the job status check
-  (wpoteat@redhat.com)
-- ENT-493: Add option to command line to return version
-  (adarshvritant@gmail.com)
-- Update executor.py (all_bright@live.com)
-- kubevirt: rename virtual machine instance (piotr.kliczewski@gmail.com)
+
+* Tue Jul 10 2018 William Poteat <wpoteat@redhat.com> 0.22.3-1
 - Update for build process (wpoteat@redhat.com)
-- Fixed hyperv wmi query. Invalid response (500)
-  (njmiller@lakemichigancollege.edu)
+
+* Fri Jun 22 2018 William Poteat <wpoteat@redhat.com> 0.22.2-5
+- 
+
+* Fri Jun 22 2018 William Poteat <wpoteat@redhat.com> 0.22.2-4
 - 1432140: Log when a duplicate hypervisor id is detected [ENT-568]
   (wpoteat@redhat.com)
 - 1368341: Warn that --sam/--satellite6 are unused & deprecated * Now logging a
@@ -289,66 +188,22 @@ fi
 - Correction to the spec file condition for python 3 (wpoteat@redhat.com)
 - ENT-554 Host reports for libvirt and rhevm include the system hardware uuid
   (wpoteat@redhat.com)
-- Add releaser for RHEL 7.6 (wpoteat@redhat.com)
-- Remove f26 releaser (f26 is EOL) (csnyder@redhat.com)
 
-* Wed Sep 19 2018 William Poteat <wpoteat@redhat.com>
-- Automatic commit of package [virt-who] release [0.22.2-1].
-  (wpoteat@redhat.com)
-- kubevirt: warn user that dependencies are missing
-  (piotr.kliczewski@gmail.com)
-- 1369634: Dont log proxy html errors for hyperv: - When hyperv gets an HTML
-  page as error response from a proxy, don't log the whole html, but try to
-  scrape the title off of it. - If scraping the title doesn't work, only log
-  the http error code. - Changed all variables named 'xml' to 'xml_doc' in
-  hyperv.py to avoid conflict with the new python keyword.
-  (nmoumoul@redhat.com)
-- 1599725: Handle job status report errors (nmoumoul@redhat.com)
-- 1557296: Warn of commented out lines prefixed with space/tab (ENT-606) - When
-  reading config files in python2, warn the user if a line continuation (starts
-  with space/tab) is followed by '#' (nmoumoul@redhat.com)
-- kubevirt: Ignore vmis in Scheduling (piotr.kliczewski@gmail.com)
-- kubevirt: Update config (piotr.kliczewski@gmail.com)
-- Print/log debug information about filtered hosts (jhnidek@redhat.com)
-- 1577954: Added config option filter_type; ENT-580 (jhnidek@redhat.com)
-- Changed info about how filter_host_parents/exclude_host_parents filters work
-  (ktordeur@redhat.com)
-- 1387800: set name of ESX cluster properly; ENT-793 (jhnidek@redhat.com)
-- Add release entry for RHEL 8 (wpoteat@redhat.com)
-- template update (wpinheir@iroman.home)
-- template update (wpinheir@iroman.home)
-- 1596041: Make python libvirt required (wpoteat@redhat.com)
-- updating RHV/RHEV/XenServer information (wpinheir@iroman.home)
-- 1581021: Decode error from unicode passwords (wpoteat@redhat.com)
-- 1510920: Change the choreography for the job status check
-  (wpoteat@redhat.com)
-- ENT-493: Add option to command line to return version
-  (adarshvritant@gmail.com)
-- Update executor.py (all_bright@live.com)
-- kubevirt: rename virtual machine instance (piotr.kliczewski@gmail.com)
-- Update for build process (wpoteat@redhat.com)
-- Fixed hyperv wmi query. Invalid response (500)
-  (njmiller@lakemichigancollege.edu)
-- 1432140: Log when a duplicate hypervisor id is detected [ENT-568]
-  (wpoteat@redhat.com)
-- 1368341: Warn that --sam/--satellite6 are unused & deprecated * Now logging a
-  warning when --sam/--satellite6 are used. * man page and --help output
-  updated to explaing that these options are unused and virt-who will report to
-  either sam/satellite/stage candlepin regardless of their being there.
-  (nmoumoul@redhat.com)
-- 1455062: Partial fix of high CPU usage, when many conf files used
-  (jhnidek@redhat.com)
+* Thu Jun 14 2018 William Poteat <wpoteat@redhat.com> 0.22.2-3
 - Correction to the spec file condition for python 3 (wpoteat@redhat.com)
-- ENT-554 Host reports for libvirt and rhevm include the system hardware uuid
-  (wpoteat@redhat.com)
+- Update to release tagger (wpoteat@redhat.com)
+
+* Thu Jun 14 2018 William Poteat <wpoteat@redhat.com>
+- Correction to the spec file condition for python 3 (wpoteat@redhat.com)
+- Update to release tagger (wpoteat@redhat.com)
+
+* Mon Jun 11 2018 William Poteat <wpoteat@redhat.com> 0.22.2-2
 - Add releaser for RHEL 7.6 (wpoteat@redhat.com)
 - Remove f26 releaser (f26 is EOL) (csnyder@redhat.com)
 
-* Sat Jul 14 2018 Fedora Release Engineering <releng@fedoraproject.org> - 0.22.2-1.2
-- Rebuilt for https://fedoraproject.org/wiki/Fedora_29_Mass_Rebuild
-
-* Tue Jun 19 2018 Miro Hrončok <mhroncok@redhat.com> - 0.22.2-1.1
-- Rebuilt for Python 3.7
+* Mon Jun 11 2018 William Poteat <wpoteat@redhat.com>
+- Add releaser for RHEL 7.6 (wpoteat@redhat.com)
+- Remove f26 releaser (f26 is EOL) (csnyder@redhat.com)
 
 * Thu May 31 2018 William Poteat <wpoteat@redhat.com> 0.22.2-1
 - Correct date ordering in changelog (wpoteat@redhat.com)

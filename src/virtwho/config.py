@@ -25,10 +25,9 @@ import six
 import os
 import uuid
 
-from six.moves.configparser import SafeConfigParser, NoOptionError, Error, MissingSectionHeaderError, ParsingError,\
-DEFAULTSECT
+from six.moves.configparser import SafeConfigParser, NoOptionError, Error, MissingSectionHeaderError
 from virtwho import log, SAT5, SAT6
-from .password import Password, InvalidKeyFile
+from .password import Password
 from binascii import unhexlify
 from . import util
 
@@ -49,8 +48,6 @@ VW_GENERAL_CONF_PATH = "/etc/virt-who.conf"
 VW_GLOBAL = "global"
 VW_VIRT_DEFAULTS_SECTION_NAME = "defaults"
 VW_ENV_CLI_SECTION_NAME = "env/cmdline"
-
-FILTER_TYPES = ("regex", "wildcards")
 
 # Default interval for sending list of UUIDs
 DefaultInterval = 3600  # One per hour
@@ -214,6 +211,7 @@ class Satellite5DestinationInfo(Info):
 # Should this be defined in the manager that actually requires these values?
 class Satellite6DestinationInfo(Info):
     required_kwargs = (
+        "env",
         "owner",
     )
     optional_kwargs = (
@@ -226,7 +224,6 @@ class Satellite6DestinationInfo(Info):
         "rhsm_proxy_port",
         "rhsm_proxy_user",
         "rhsm_proxy_password",
-        "rhsm_no_proxy",
         "rhsm_insecure",
     )
 
@@ -249,24 +246,6 @@ class StripQuotesConfigParser(SafeConfigParser):
             if value.startswith(quote) and value.endswith(quote) and quote not in value[1:-1]:
                 return value.strip(quote)
         return value
-
-    def _read(self, fp, fpname):
-        """ If we're running python2, before reading the config file, parse through it to check if a commented out
-        continuation line was detected (line starts with spaces/tabs, followed by '#') and if so, warn the user.
-        Note: In python3, the configparser lib itself will remove commented out line continuations, so there is
-        no need to perform this check.
-        """
-        if six.PY2:
-            line_number = 0
-            for line in fp:
-                line_number = line_number + 1
-                if line[0] == ' ' or line[0] == '\t':
-                    if len(line.strip()) > 0 and line.strip()[0] == '#':
-                        # warn the user that a continuation of the previous line is commented out
-                        logger.warn("A line continuation (line starts with space) that is commented out "
-                                    "was detected in file %s, line number %s.", fpname, line_number)
-            fp.seek(0)
-        SafeConfigParser._read(self, fp, fpname)
 
 
 class DestinationToSourceMapper(object):
@@ -586,7 +565,7 @@ class ConfigSection(collections.MutableMapping):
                    self.defaults[default_key] is not None:
                     self.validation_messages.append(
                         (
-                            'debug',
+                            'warning',
                             'Value for "%s" not set, using default: %s' %
                             (default_key, self.defaults[default_key])
                         )
@@ -883,6 +862,7 @@ class VirtConfigSection(ConfigSection):
         super(VirtConfigSection, self).__init__(section_name, wrapper)
         self.add_key('type', validation_method=self._validate_virt_type, default='libvirt')
         self.add_key('sm_type', validation_method=self._validate_sm_type, default="sam", restricted=True)
+        self.add_key('is_hypervisor', validation_method=self._validate_str_to_bool, default=True)
         self.add_key('hypervisor_id', validation_method=self._validate_hypervisor_id, default='uuid')
         # Unencrypted passwords
         self.add_key('password', validation_method=self._validate_unencrypted_password)
@@ -906,9 +886,11 @@ class VirtConfigSection(ConfigSection):
         # Needed to allow us to parse the destination info
         self.add_key('sat_server', validation_method=lambda *args: None)
         self.add_key('server', validation_method=self._validate_server)
+        # self.add_key('env', validation_method=self._validate_env)
+        # self.add_key('owner', validation_method=self._validate_owner)
+        self.add_key('env', validation_method=self._validate_env, required=True)
         self.add_key('owner', validation_method=self._validate_owner, required=True)
         self.add_key('filter_hosts', validation_method=self._validate_filter)
-        self.add_key('filter_type', validation_method=self._validate_filter_type)
         self.add_key('exclude_hosts', validation_method=self._validate_filter)
         self.add_key('rhsm_proxy_hostname', validation_method=self._validate_non_empty_string)
         self.add_key('rhsm_proxy_port', validation_method=self._validate_non_empty_string)
@@ -916,7 +898,6 @@ class VirtConfigSection(ConfigSection):
         self.add_key('rhsm_port', validation_method=self._validate_non_empty_string)
         self.add_key('rhsm_prefix', validation_method=self._validate_non_empty_string)
         self.add_key('rhsm_insecure', validation_method=self._validate_non_empty_string)
-        self.add_key('rhsm_no_proxy', validation_method=self._validate_non_empty_string)
 
     def __setitem__(self, key, value):
         for old_key, new_key in self.RENAMED_OPTIONS:
@@ -929,21 +910,25 @@ class VirtConfigSection(ConfigSection):
         if 'virt_type' in self._values and 'type' not in self._values:
             self['type'] = self._values['virt_type']
             self.remove_key('virt_type')
-        # Logic of owner is little bit tricky :-(
+        # Logic of env and owner is little bit tricky :-(
         if 'sm_type' in self._values:
             if self._values['sm_type'] == SAT5:
                 self._required_keys.update(Satellite5DestinationInfo.required_kwargs)
-                # Owner is only necessary for SAT6 and only for certain backends
+                # Owner and Env are only necessary for SAT6 and only for certain backends
                 self._required_keys.discard('owner')
+                self._required_keys.discard('env')
             elif self._values['sm_type'] == SAT6:
                 if self['type'] == 'libvirt' and 'server' not in self._values:
-                    # Owner is not necessary sam an libvirt virt backend
+                    # Owner and Env are not necessary sam an libvirt virt backend
                     self._required_keys.discard('owner')
+                    self._required_keys.discard('env')
                 elif self['type'] == 'vdsm':
                     self._required_keys.discard('owner')
+                    self._required_keys.discard('env')
                 # TODO: is_hypervisor has to be true too, but it is hard to implement in this state
                 elif self['type'] == 'fake':
                     self._required_keys.discard('owner')
+                    self._required_keys.discard('env')
         super(VirtConfigSection, self)._pre_validate()
 
     def _validate_sm_type(self, key):
@@ -1046,11 +1031,6 @@ class VirtConfigSection(ConfigSection):
                     "Option \"{option}\" cannot be decrypted, possibly corrupted"
                     .format(option=pass_key)
                 )
-            except InvalidKeyFile as err:
-                result = (
-                    'error',
-                    "Unable to read key file: %s" % str(err)
-                )
         return result
 
     def _validate_username(self, username_key):
@@ -1084,15 +1064,32 @@ class VirtConfigSection(ConfigSection):
         """
         result = None
         # Server option must be there for ESX, RHEVM, and HYPERV
-        if key not in self._values or len(self._values[key]) == 0:
+        if key not in self._values:
             if 'type' in self._values and self._values['type'] in ['libvirt', 'vdsm', 'fake']:
                 self._values[key] = ''
             else:
                 result = (
-                    'error',
+                    'warning',
                     "Option %s needs to be set in config: '%s'" % (key, self.name)
                 )
 
+        return result
+
+    def _validate_env(self, key):
+        """
+        Try to validate environment option
+        """
+        result = None
+        sm_type = self._values['sm_type']
+        virt_type = self._values.get('type')
+        if sm_type == 'sam' and (
+                (virt_type in ('esx', 'rhevm', 'hyperv', 'xen')) or
+                (virt_type == 'libvirt' and 'server' in self._values)):
+            if key not in self:
+                result = (
+                    'warning',
+                    "Option `%s` needs to be set in config: '%s'" % (key, self.name)
+                )
         return result
 
     def _validate_owner(self, key):
@@ -1110,21 +1107,6 @@ class VirtConfigSection(ConfigSection):
                 )
         return result
 
-    def _validate_filter_type(self, key):
-        """
-        Try to validate type of filter
-        :param key: key of filter type (it should be always 'filter_type')
-        :return: None or list of warnings
-        """
-        result = None
-        filter_type = self._values.get('filter_type')
-        if filter_type not in FILTER_TYPES:
-            result = (
-                'error',
-                "'%s' must be one of: '%s'" % (key, ", ".join(FILTER_TYPES))
-            )
-        return result
-
     def _validate_filter(self, filter_key):
         """
         Try to validate filter option. It can contain list of hostname and UUIDs
@@ -1138,8 +1120,6 @@ class VirtConfigSection(ConfigSection):
             # When validation of list failed, then there is no reason for
             # further validation, because self._values[filter_key] is empty
             return result
-
-        result = []
 
         hypervisor_id = self._values.get('hypervisor_id')
 
@@ -1156,21 +1136,11 @@ class VirtConfigSection(ConfigSection):
                 else:
                     wrong_filter_values.append(filter_value)
             if len(wrong_filter_values) > 0:
-                result.append((
+                result = (
                     'warning',
                     'Filter values: "%s" appear to be UUIDs. UUIDs are not gathered when hypervisor_id = "%s"' %
                     (', '.join(wrong_filter_values), hypervisor_id)
-                ))
-
-        if 'filter_type' not in self:
-            result.append((
-                'warning',
-                '"%s" is set, but filter_type is not set. Possible values of filter_type: "%s". Using default: "wildcards".' %
-                (filter_key, ', '.join(FILTER_TYPES))
-            ))
-
-        if len(result) == 0:
-            result = None
+                )
 
         return result
 
@@ -1198,17 +1168,17 @@ class GlobalSection(ConfigSection):
         result = None
         try:
             self._values[key] = int(self._values[key])
-        except (TypeError, ValueError) as e:
-            self._values[key] = 0
-        except KeyError:
-            return ('warning', '%s is missing' % key)
 
-        if self._values[key] < MinimumSendInterval:
-            message = "Interval value can't be lower than {min} seconds. Default value of " \
-                      "{default} " \
-                      "seconds will be used.".format(min=MinimumSendInterval, default=DefaultInterval)
-            result = ("warning", message)
-            self._values['interval'] = DefaultInterval
+            if self._values[key] < MinimumSendInterval:
+                message = "Interval value can't be lower than {min} seconds. Default value of " \
+                          "{min} " \
+                          "seconds will be used.".format(min=DefaultInterval)
+                result = ("warning", message)
+                self._values['interval'] = DefaultInterval
+        except KeyError:
+            result = ('warning', '%s is missing' % key)
+        except (TypeError, ValueError) as e:
+            result = ('warning', '%s was not set to a valid integer: %s' % (key, str(e)))
         return result
 
     def _validate_configs(self):
@@ -1440,18 +1410,6 @@ def init_config(env_options, cli_options, config_dir=None):
             if key:
                 effective_config[VW_ENV_CLI_SECTION_NAME][key.lower()] = value
 
-    # 1638250: issue in the urllib or requests package in python 3
-    if six.PY3:
-        https = None
-        if 'https_proxy' in os.environ:
-            https = os.environ['https_proxy']
-        http = None
-        if 'http_proxy' in os.environ:
-            http =  os.environ['http_proxy']
-            del os.environ['http_proxy']
-        if http and not https:
-            os.environ['https_proxy'] = http
-
     # Now with the aggregate config data, run it through the appropriate class to get it validated/defaulted.
     effective_config[VW_ENV_CLI_SECTION_NAME] = VirtConfigSection.from_dict(effective_config[VW_ENV_CLI_SECTION_NAME], VW_ENV_CLI_SECTION_NAME, effective_config)
 
@@ -1495,7 +1453,7 @@ def init_config(env_options, cli_options, config_dir=None):
     # Log pending errors
     for err in validation_errors:
         method = getattr(logger, err[0])
-        if method is not None and err[0] in ['error', 'warning', 'info', 'debug']:
+        if method is not None and err[0] in ['error', 'warning', 'info']:
             method(err[1])
 
     return effective_config

@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 from __future__ import print_function
 """
 Test of RHEV-M virtualization backend.
@@ -106,7 +104,7 @@ class TestRhevM(TestBase):
 
     def setUp(self):
         config = self.create_config(name='test', wrapper=None, type='rhevm', server='localhost', username='username',
-                        password=u'1€345678', owner='owner')
+                        password='password', owner='owner', env='env')
         self.rhevm = Virt.from_config(self.logger, config, Datastore())
         self.rhevm.major_version = '3'
         self.rhevm.build_urls()
@@ -135,8 +133,8 @@ class TestRhevM(TestBase):
             call('https://localhost:8443/api/vms', auth=ANY, verify=ANY),
             call().raise_for_status(),
         ])
-        self.assertEqual(get.call_args[1]['auth'].username, u'username'.encode('utf-8'))
-        self.assertEqual(get.call_args[1]['auth'].password, u'1€345678'.encode('utf-8'))
+        self.assertEqual(get.call_args[1]['auth'].username, 'username')
+        self.assertEqual(get.call_args[1]['auth'].password, 'password')
 
     @patch('requests.get')
     def test_connection_refused(self, get):

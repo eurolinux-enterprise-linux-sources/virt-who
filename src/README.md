@@ -33,13 +33,11 @@ Backends for reporting list of guest running on given machine:
 * vdsm
 
 Backends for reporting hosts to guests association:
-* RHEV-M (3.x)
-* RHV-M (4.x)
+* RHEV-M
 * VMWare vCenter Server and ESX(i)
 * Hyper-V
 * Remote libvirt
 * Kubevirt
-* XenServer
 
 
 ## Supported subscription managers

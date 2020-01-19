@@ -27,7 +27,8 @@ import suds.client
 import requests
 import errno
 import stat
-from six import BytesIO
+from six import StringIO
+import six
 import io
 import logging
 from time import time
@@ -88,7 +89,7 @@ class RequestsTransport(suds.transport.Transport):
     def open(self, request):
         resp = self._session.get(request.url, headers=request.headers, verify=False)
         resp.raise_for_status()
-        return BytesIO(resp.content)
+        return StringIO(resp.content.decode('utf-8', 'ignore'))
 
     def send(self, request):
         resp = self._session.post(
@@ -118,9 +119,11 @@ class Esx(virt.Virt):
                                   terminate_event=terminate_event,
                                   interval=interval,
                                   oneshot=oneshot)
-        self.url = self.config['server']
-        self.username = self.config['username']
-        self.password = self.config['password']
+        self.url = config['server']
+        self.username = config['username']
+        self.password = config['password']
+
+        self.config = config
 
         self.filter = None
         self.sc = None
@@ -299,13 +302,12 @@ class Esx(virt.Virt):
                 if domain_name:
                     name = self._format_hostname(name, domain_name)
             except KeyError:
-                self.logger.debug("Unable to determine hostname for host '%s'. Ommitting from report", uuid)
-                continue
+                self.logger.debug("Unable to determine hostname for host '%s'", uuid)
+                name = ''
 
             facts = {
                 virt.Hypervisor.CPU_SOCKET_FACT: str(host['hardware.cpuInfo.numCpuPackages']),
                 virt.Hypervisor.HYPERVISOR_TYPE_FACT: host.get('config.product.name', 'vmware'),
-                virt.Hypervisor.SYSTEM_UUID_FACT: host['hardware.systemInfo.uuid']
             }
 
             if host['parent'] and host['parent']._type == 'ClusterComputeResource':
@@ -320,6 +322,29 @@ class Esx(virt.Virt):
 
             mapping['hypervisors'].append(virt.Hypervisor(hypervisorId=uuid, guestIds=guests, name=name, facts=facts))
         return mapping
+
+    @staticmethod
+    def _to_unicode(value):
+        try:
+            return six.text_type(value, 'utf-8')
+        except TypeError:
+            return value
+
+    @property
+    def password(self):
+        return self._password
+
+    @password.setter
+    def password(self, value):
+        self._password = self._to_unicode(value)
+
+    @property
+    def username(self):
+        return self._username
+
+    @username.setter
+    def username(self, value):
+        self._username = self._to_unicode(value)
 
     def login(self):
         """
@@ -533,6 +558,7 @@ class EsxConfigSection(VirtConfigSection):
         self.add_key('server', validation_method=self._validate_server, required=True)
         self.add_key('username', validation_method=self._validate_username, required=True)
         self.add_key('password', validation_method=self._validate_unencrypted_password, required=True)
+        self.add_key('is_hypervisor', validation_method=self._validate_str_to_bool, default=True)
         self.add_key('simplified_vim', validation_method=self._validate_str_to_bool, default=True)
         self.add_key('filter_host_parents', validation_method=self._validate_filter, default=None)
         self.add_key('exclude_host_parents', validation_method=self._validate_filter, default=None)

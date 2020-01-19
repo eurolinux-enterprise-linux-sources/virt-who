@@ -34,6 +34,7 @@ except ImportError:
 
 from virtwho import log
 from virtwho.config import InvalidPasswordFormat, VW_GLOBAL
+from virtwho.daemon import daemon
 from virtwho.executor import Executor, ReloadRequest, ExitRequest
 from virtwho.parser import parse_options, OptionError
 from virtwho.password import InvalidKeyFile
@@ -102,21 +103,17 @@ def atexit_fn(*args, **kwargs):
     executor = None
 
 
-def reload(sig, stackframe):
+def reload(signal, stackframe):
     if executor:
-        # Ignore signal SIGHUP during reloading executor
-        # See bug: https://bugzilla.redhat.com/show_bug.cgi?id=1506167
-        signal.signal(signal.SIGHUP, lambda _sig, _stack: None)
         executor.reload()
-        signal.signal(signal.SIGHUP, reload)
         raise ReloadRequest()
     exit(1, status="virt-who cannot reload, exiting")
 
 
 def main():
-    logger = effective_config = None
+    logger = options = None
     try:
-        logger, effective_config = parse_options()
+        logger, options = parse_options()
         # We now have the effective_config
     except OptionError as e:
         print(str(e), file=sys.stderr)
@@ -129,13 +126,13 @@ def main():
         print(msg, file=sys.stderr)
         exit(1, status=msg)
 
-    if not effective_config[VW_GLOBAL].is_valid():
+    if not options[VW_GLOBAL].is_valid():
         message = "Required section 'global' is invalid:\n"
-        message += "\n".join([msg for (level, msg) in effective_config[VW_GLOBAL].validation_messages])
+        message += "\n".join([msg for (level, msg) in options[VW_GLOBAL].validation_messages])
         message += "\n"
         exit(1, "virt-who can't be started: %s" % message)
 
-    valid_virt_sections = [(name, section) for (name, section) in effective_config.virt_sections()
+    valid_virt_sections = [(name, section) for (name, section) in options.virt_sections()
                            if section.is_valid()]
 
     if not valid_virt_sections:
@@ -146,7 +143,7 @@ def main():
     global executor
     has_error = False
     try:
-        executor = Executor(logger, effective_config)
+        executor = Executor(logger, options)
     except (InvalidKeyFile, InvalidPasswordFormat) as e:
         logger.error(str(e))
         exit(1, "virt-who can't be started: %s" % str(e))
@@ -161,7 +158,7 @@ def main():
         logger.info('Using configuration "%s" ("%s" mode)', name,
                     config['type'])
 
-    logger.info("Using reporter_id='%s'", effective_config[VW_GLOBAL]['reporter_id'])
+    logger.info("Using reporter_id='%s'", options[VW_GLOBAL]['reporter_id'])
     log.closeLogger(logger)
 
     with lock:

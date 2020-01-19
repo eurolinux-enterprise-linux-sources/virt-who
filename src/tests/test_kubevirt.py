@@ -36,127 +36,79 @@ class TestKubevirt(TestBase):
         config.validate()
         return config
 
-    def nodes(self):
-        node = {
-            'metadata': {
-                'name': 'master'
-            },
-            'status': {
-                'nodeInfo': {
-                    'machineID': '52c01ad890e84b15a1be4be18bd64ecd',
-                    'kubeletVersion': 'v1.9.1+a0ce1bc657'
-                },
-                'addresses': [
-                    {'address': '192.168.122.140',
-                     'type': 'InternalIP'},
-                    {'address': 'minikube',
-                     'type': 'Hostname'}
-                ],
-                'allocatable' : {
-                    'cpu': '2'
-                }
-            }
-        }
+    def setUp(self):
+        config = self.create_config(name='test', wrapper=None, type='kubevirt',
+                                    owner='owner', env='env')
+        with patch.dict('os.environ', {'KUBECONFIG':'/dev/null'}):
+            self.kubevirt = Virt.from_config(self.logger, config, Datastore())
 
-        return {'items': [node]}
+    def nodes(self):
+        metadata = Mock()
+        metadata.name = "master"
+
+        node_info = Mock()
+        node_info.machine_id = "52c01ad890e84b15a1be4be18bd64ecd"
+        node_info.kubelet_version = "v1.9.1+a0ce1bc657"
+
+        address = Mock()
+        address.address = "master"
+
+        status = Mock()
+        status.node_info = node_info
+        status.addresses = [address]
+        status.allocatable = {"cpu": "2"}
+
+        node = Mock()
+        node.metadata = metadata
+        node.status = status
+
+        nodes = Mock()
+        nodes.items = [node]
+
+        return nodes
 
     def vms(self):
-        vm = {
-            'metadata': {
-                'name': 'win-2016',
-                'namespace': 'default',
-            },
-            'spec': {
-                'domain': {
-                    'devices': {
-                        'disks': [
-                            {'disk': {'bus': 'virtio'}, 'name': 'containerdisk'}
-                        ],
-                        'interfaces': [
-                            {'bridge': {}, 'name': 'default'}
-                        ],
-                    },
-                    'features': {
-                        'acpi': {
-                            'enabled': 'true'
-                        }
-                    },
-                    'firmware': {
-                        'uuid': 'f83c5f73-5244-4bd1-90cf-02bac2dda608'
-                    },
-                    'machine': {
-                        'type': 'q35'
-                    }
-                }
-            },
-            'status': {
-                'nodeName': 'master',
-            }
-        }
+        metadata = Mock()
+        metadata.name = "win-2016"
+        metadata.namespace = "default"
 
-        return {'items': [vm]}
+        status = Mock()
+        status.node_name = "master"
+
+        vm = Mock()
+        vm.metadata = metadata
+        vm.status = status
+
+        vms = Mock()
+        vms.items = [vm]
+
+        return vms
 
     def test_getHostGuestMapping(self):
-        client = Mock()
-        client.get_nodes.return_value = self.nodes()
-        client.get_vms.return_value = self.vms()
+        kube_api = Mock()
+        kube_api.list_node.return_value = self.nodes()
 
-        config = self.create_config(name='test', wrapper=None, type='kubevirt',
-                                    owner='owner', kubeconfig='/etc/hosts')
+        kubevirt_api = Mock()
+        kubevirt_api.list_virtual_machine_for_all_namespaces_0.return_value = self.vms()
 
-        with patch.dict('os.environ', {'KUBECONFIG':'/dev/null'}):
-            kubevirt = Virt.from_config(self.logger, config, Datastore())
+        self.kubevirt.kube_api = kube_api
+        self.kubevirt.kubevirt_api = kubevirt_api
 
-            kubevirt._client = client
-
-            expected_result = Hypervisor(
-                hypervisorId='52c01ad890e84b15a1be4be18bd64ecd',
-                name='master',
-                guestIds=[
-                    Guest(
-                        'f83c5f73-5244-4bd1-90cf-02bac2dda608',
-                        kubevirt.CONFIG_TYPE,
-                        Guest.STATE_RUNNING,
-                    )
-                ],
-                facts={
-                    Hypervisor.CPU_SOCKET_FACT: '2',
-                    Hypervisor.HYPERVISOR_TYPE_FACT: 'qemu',
-                    Hypervisor.HYPERVISOR_VERSION_FACT: 'v1.9.1+a0ce1bc657',
-                }
-            )
-            result = kubevirt.getHostGuestMapping()['hypervisors'][0]
-            self.assertEqual(expected_result.toDict(), result.toDict())
-
-    def test_getHostGuestMapping_with_hm(self):
-        client = Mock()
-        client.get_nodes.return_value = self.nodes()
-        client.get_vms.return_value = self.vms()
-
-        config = self.create_config(name='test', wrapper=None, type='kubevirt',
-                                    owner='owner', kubeconfig='/etc/hosts',
-                                    hypervisor_id='hostname')
-
-        with patch.dict('os.environ', {'KUBECONFIG':'/dev/null'}):
-            kubevirt = Virt.from_config(self.logger, config, Datastore())
-
-            kubevirt._client = client
-
-            expected_result = Hypervisor(
-                hypervisorId='minikube',
-                name='master',
-                guestIds=[
-                    Guest(
-                        'f83c5f73-5244-4bd1-90cf-02bac2dda608',
-                        kubevirt.CONFIG_TYPE,
-                        Guest.STATE_RUNNING,
-                    )
-                ],
-                facts={
-                    Hypervisor.CPU_SOCKET_FACT: '2',
-                    Hypervisor.HYPERVISOR_TYPE_FACT: 'qemu',
-                    Hypervisor.HYPERVISOR_VERSION_FACT: 'v1.9.1+a0ce1bc657',
-                }
-            )
-            result = kubevirt.getHostGuestMapping()['hypervisors'][0]
-            self.assertEqual(expected_result.toDict(), result.toDict())
+        expected_result = Hypervisor(
+            hypervisorId='52c01ad890e84b15a1be4be18bd64ecd',
+            name='master',
+            guestIds=[
+                Guest(
+                    'default/win-2016',
+                    self.kubevirt.CONFIG_TYPE,
+                    Guest.STATE_RUNNING,
+                )
+            ],
+            facts={
+                Hypervisor.CPU_SOCKET_FACT: '2',
+                Hypervisor.HYPERVISOR_TYPE_FACT: 'qemu',
+                Hypervisor.HYPERVISOR_VERSION_FACT: 'v1.9.1+a0ce1bc657',
+            }
+        )
+        result = self.kubevirt.getHostGuestMapping()['hypervisors'][0]
+        self.assertEqual(expected_result.toDict(), result.toDict())

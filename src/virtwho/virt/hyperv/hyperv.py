@@ -20,6 +20,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """
 
+import sys
 import re
 from six.moves import urllib
 import base64
@@ -390,23 +391,21 @@ class HyperVSoap(object):
         else:
             data = response.content
             try:
-                xml_doc = ElementTree.fromstring(data)
-                errorcode = xml_doc.find('.//{http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/MSFT_WmiError}error_Code')
+                xml = ElementTree.fromstring(data)
+                errorcode = xml.find('.//{http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/MSFT_WmiError}error_Code')
                 # Suppress reporting of invalid namespace, because we're testing
                 # both old and new namespaces that HyperV uses
                 if errorcode is None or errorcode.text != '2150858778':
-                    title = xml_doc.find('.//title')
-                    self.logger.debug("Invalid response (%d) from Hyper-V: %s", response.status_code, title.text)
+                    self.logger.debug("Invalid response (%d) from Hyper-V: %s", response.status_code, data)
             except Exception:
-                self.logger.debug("Invalid response (%d) from Hyper-V", response.status_code)
-
+                self.logger.debug("Invalid response (%d) from Hyper-V: %s", response.status_code, data)
             raise HyperVCallFailed("Communication with Hyper-V failed, HTTP error: %d" % response.status_code)
 
     @classmethod
-    def _Instance(cls, xml_doc):
+    def _Instance(cls, xml):
         def stripNamespace(tag):
             return tag[tag.find("}") + 1:]
-        children = xml_doc.getchildren()
+        children = xml.getchildren()
         if len(children) < 1:
             return None
         child = children[0]
@@ -418,10 +417,10 @@ class HyperVSoap(object):
     def Enumerate(self, query, namespace="root/virtualization"):
         data = self.generator.enumerateXML(query=query, namespace=namespace)
         body = self.post(data)
-        xml_doc = ElementTree.fromstring(body)
-        if xml_doc.tag != "{%(s)s}Envelope" % self.generator.namespaces:
+        xml = ElementTree.fromstring(body)
+        if xml.tag != "{%(s)s}Envelope" % self.generator.namespaces:
             raise HyperVException("Wrong reply format")
-        responses = xml_doc.findall("{%(s)s}Body/{%(wsen)s}EnumerateResponse" % self.generator.namespaces)
+        responses = xml.findall("{%(s)s}Body/{%(wsen)s}EnumerateResponse" % self.generator.namespaces)
         if len(responses) < 1:
             raise HyperVException("Wrong reply format")
         contexts = responses[0].getchildren()
@@ -435,10 +434,10 @@ class HyperVSoap(object):
     def _PullOne(self, uuid, namespace):
         data = self.generator.pullXML(enumerationContext=uuid, namespace=namespace)
         body = self.post(data)
-        xml_doc = ElementTree.fromstring(body)
-        if xml_doc.tag != "{%(s)s}Envelope" % self.generator.namespaces:
+        xml = ElementTree.fromstring(body)
+        if xml.tag != "{%(s)s}Envelope" % self.generator.namespaces:
             raise HyperVException("Wrong reply format")
-        responses = xml_doc.findall("{%(s)s}Body/{%(wsen)s}PullResponse" % self.generator.namespaces)
+        responses = xml.findall("{%(s)s}Body/{%(wsen)s}PullResponse" % self.generator.namespaces)
         if len(responses) < 0:
             raise HyperVException("Wrong reply format")
 
@@ -468,10 +467,10 @@ class HyperVSoap(object):
         '''
         data = self.generator.getSummaryInformationXML(namespace)
         body = self.post(data)
-        xml_doc = ElementTree.fromstring(body)
-        if xml_doc.tag != "{%(s)s}Envelope" % self.generator.namespaces:
+        xml = ElementTree.fromstring(body)
+        if xml.tag != "{%(s)s}Envelope" % self.generator.namespaces:
             raise HyperVException("Wrong reply format")
-        responses = xml_doc.findall("{%(s)s}Body/{%(vsms)s}GetSummaryInformation_OUTPUT" % {
+        responses = xml.findall("{%(s)s}Body/{%(vsms)s}GetSummaryInformation_OUTPUT" % {
             's': self.generator.namespaces['s'],
             'vsms': self.generator.vsms_namespace % {'ns': namespace}
         })
@@ -508,9 +507,9 @@ class HyperV(virt.Virt):
                                      terminate_event=terminate_event,
                                      interval=interval,
                                      oneshot=oneshot)
-        self.url = self.config['url']
-        self.username = self.config['username']
-        self.password = self.config['password']
+        self.url = config['url']
+        self.username = config['username']
+        self.password = config['password']
 
         # First try to use old API (root/virtualization namespace) if doesn't
         # work, go with root/virtualization/v2
@@ -543,7 +542,7 @@ class HyperV(virt.Virt):
         https://social.technet.microsoft.com/Forums/windowsserver/en-US/dce2a4ec-10de-4eba-a19d-ae5213a2382d/how-to-tell-version-of-hyperv-installed?forum=winserverhyperv
         """
         vmmsVersion = ""
-        data = hypervsoap.Enumerate("select * from CIM_Datafile where Path = '\\\\windows\\\\system32\\\\' and FileName='vmms'", "root/cimv2")
+        data = hypervsoap.Enumerate("select * from CIM_Datafile where FileName='vmms'", "root/cimv2")
         for instance in hypervsoap.Pull(data, "root/cimv2"):
             if instance['Path'] == '\\windows\\system32\\':
                 vmmsVersion = instance['Version']
@@ -583,8 +582,7 @@ class HyperV(virt.Virt):
         for instance in hypervsoap.Pull(uuid):
             try:
                 uuid = instance["BIOSGUID"]
-                assert uuid is not None
-            except (KeyError, AssertionError):
+            except KeyError:
                 self.logger.warning("Guest without BIOSGUID found, ignoring")
                 continue
 
@@ -609,20 +607,17 @@ class HyperV(virt.Virt):
             hostname = instance["DNSHostName"]
             socket_count = instance["NumberOfProcessors"]
 
-        uuid = hypervsoap.Enumerate("select UUID from Win32_ComputerSystemProduct", "root/cimv2")
-        system_uuid = None
-        for instance in hypervsoap.Pull(uuid, "root/cimv2"):
-            system_uuid = HyperV.decodeWinUUID(instance["UUID"])
-
         if self.config['hypervisor_id'] == 'uuid':
-            host = system_uuid
+            uuid = hypervsoap.Enumerate("select UUID from Win32_ComputerSystemProduct", "root/cimv2")
+            host = None
+            for instance in hypervsoap.Pull(uuid, "root/cimv2"):
+                host = HyperV.decodeWinUUID(instance["UUID"])
         elif self.config['hypervisor_id'] == 'hostname':
             host = hostname
         facts = {
             virt.Hypervisor.CPU_SOCKET_FACT: str(socket_count),
             virt.Hypervisor.HYPERVISOR_TYPE_FACT: 'hyperv',
             virt.Hypervisor.HYPERVISOR_VERSION_FACT: vmmsVersion,
-            virt.Hypervisor.SYSTEM_UUID_FACT: system_uuid
         }
         hypervisor = virt.Hypervisor(hypervisorId=host, name=hostname, guestIds=guests, facts=facts)
         return {'hypervisors': [hypervisor]}

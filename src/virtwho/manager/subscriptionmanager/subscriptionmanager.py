@@ -23,7 +23,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 import os
 import json
 from six.moves.http_client import BadStatusLine
-from six import string_types
 
 import rhsm.connection as rhsm_connection
 import rhsm.certificate as rhsm_certificate
@@ -32,7 +31,6 @@ import rhsm.config as rhsm_config
 from virtwho.config import NotSetSentinel
 from virtwho.manager import Manager, ManagerError, ManagerFatalError, ManagerThrottleError
 from virtwho.virt import AbstractVirtReport
-from virtwho.util import generate_correlation_id
 
 
 class SubscriptionManagerError(ManagerError):
@@ -74,7 +72,6 @@ class SubscriptionManager(Manager):
         self.key_file = None
         self.readConfig()
         self.connection = None
-        self.correlation_id = generate_correlation_id()
 
     def readConfig(self):
         """ Parse rhsm.conf in order to obtain consumer
@@ -87,6 +84,52 @@ class SubscriptionManager(Manager):
         self.cert_file = os.path.join(consumer_cert_dir, cert)
         self.key_file = os.path.join(consumer_cert_dir, key)
 
+    def _check_owner_lib(self, kwargs, config):
+        """
+        Try to check values of env and owner. These values has to be
+        equal to values obtained from Satellite server.
+        :param kwargs: dictionary possibly containing valid username and
+                       password used for connection to rhsm
+        :param config: Configuration of virt-who
+        :return: None
+        """
+
+        if config is None:
+            return
+
+        # Check 'owner' and 'env' only in situation, when these values
+        # are set and rhsm_username and rhsm_password are not set
+        if 'username' not in kwargs and 'password' not in kwargs and \
+                'owner' in config.keys() and 'env' in config.keys():
+            pass
+        else:
+            return
+
+        uuid = self.uuid()
+        consumer = self.connection.getConsumer(uuid)
+
+        if 'environment' in consumer:
+            environment = consumer['environment']
+        else:
+            return
+
+        if environment:
+            environment_name = environment['name']
+            owner = self.connection.getOwner(uuid)
+            owner_id = owner['key']
+
+            if config['owner'] != owner_id:
+                raise ManagerError(
+                    "Cannot send data to: %s, because owner from configuration: %s is different" %
+                    (owner_id, config['owner'])
+                )
+
+            if config['env'] != environment_name:
+                raise ManagerError(
+                    "Cannot send data to: %s, because Satellite env: %s differs from configuration: %s" %
+                    (owner_id, environment_name, config['env'])
+                )
+
     def _connect(self, config=None):
         """ Connect to the subscription-manager. """
 
@@ -98,7 +141,6 @@ class SubscriptionManager(Manager):
             'proxy_port': self.rhsm_config.get('server', 'proxy_port'),
             'proxy_user': self.rhsm_config.get('server', 'proxy_user'),
             'proxy_password': self.rhsm_config.get('server', 'proxy_password'),
-            'no_proxy': self.rhsm_config.get('server', 'no_proxy'),
             'insecure': self.rhsm_config.get('server', 'insecure')
         }
         kwargs_to_config = {
@@ -109,7 +151,6 @@ class SubscriptionManager(Manager):
             'proxy_port': 'rhsm_proxy_port',
             'proxy_user': 'rhsm_proxy_user',
             'proxy_password': 'rhsm_proxy_password',
-            'no_proxy': 'rhsm_no_proxy',
             'insecure': 'rhsm_insecure'
         }
 
@@ -152,10 +193,6 @@ class SubscriptionManager(Manager):
             kwargs['cert_file'] = self.cert_file
             kwargs['key_file'] = self.key_file
 
-        self.logger.info("X-Correlation-ID: %s", self.correlation_id)
-        if self.correlation_id:
-            kwargs['correlation_id'] = self.correlation_id
-
         self.connection = rhsm_connection.UEPConnection(**kwargs)
         try:
             if not self.connection.ping()['result']:
@@ -166,6 +203,8 @@ class SubscriptionManager(Manager):
             raise ManagerThrottleError(e.retry_after)
         except BadStatusLine:
             raise ManagerError("Communication with subscription manager interrupted")
+
+        self._check_owner_lib(kwargs, config)
 
         return self.connection
 
@@ -219,7 +258,7 @@ class SubscriptionManager(Manager):
             try:
                 result = self.connection.hypervisorCheckIn(
                     report.config['owner'],
-                    '',
+                    report.config['env'],
                     serialized_mapping,
                     options=named_options)  # pylint:disable=unexpected-keyword-arg
             except TypeError:
@@ -228,7 +267,7 @@ class SubscriptionManager(Manager):
                 self.logger.debug(
                     "hypervisorCheckIn method in python-rhsm doesn't understand options parameter, ignoring"
                 )
-                result = self.connection.hypervisorCheckIn(report.config['owner'], '', serialized_mapping)
+                result = self.connection.hypervisorCheckIn(report.config['owner'], report.config['env'], serialized_mapping)
         except BadStatusLine:
             raise ManagerError("Communication with subscription manager interrupted")
         except rhsm_connection.RateLimitExceededException as e:
@@ -241,7 +280,7 @@ class SubscriptionManager(Manager):
             raise ManagerError("Communication with subscription manager failed: %s" % str(e))
 
         if is_async is True:
-            report.state = AbstractVirtReport.STATE_CREATED
+            report.state = AbstractVirtReport.STATE_PROCESSING
             report.job_id = result['id']
         else:
             report.state = AbstractVirtReport.STATE_FINISHED
@@ -324,9 +363,6 @@ class SubscriptionManager(Manager):
             result_data = result.get('resultData', {})
             if not result_data:
                 self.logger.warning("Job status report without resultData: %s", result)
-                return
-            if isinstance(result_data, string_types):
-                self.logger.warning("Job status report encountered the following error: %s", result_data)
                 return
             for fail in result_data.get('failedUpdate', []):
                 self.logger.error("Error during update list of guests: %s", str(fail))

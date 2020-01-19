@@ -88,6 +88,7 @@ class TestFakeRead(TestBase):
 type=fake
 is_hypervisor=true
 owner=taylor
+env=swift
 file=%s
 """ % self.hypervisor_file)
         effective_config = init_config({}, {}, config_dir=self.config_dir)
@@ -117,6 +118,7 @@ file=%s
 type=fake
 is_hypervisor=true
 owner=covfefe
+env=covfefe
 file=%s
 """ % self.hypervisor_file)
         effective_config = init_config({}, {}, config_dir=self.config_dir)

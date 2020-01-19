@@ -84,13 +84,9 @@ class InstallConfig(install):
             install_file(origname, output.format(root=root))
 
 
-version = {}
-with open('virtwho/version.py') as ver_file:
-    exec(ver_file.read(), version)
-
 setup(
     name='virt-who',
-    version='0.24.7',
+    version='0.22.5',
     description='virt-who is agent for reporting virtual guest IDs to subscription manager.',
     # long_description=open('README.md').read(),
     author='Radek Novacek',

@@ -44,8 +44,10 @@ XEN_SECTION_VALUES = {
     'server': 'https://10.0.0.101',
     'username': 'root',
     'password': 'secret_password',
+    'env': '123456',
     'owner': '123456',
-    'hypervisor_id': 'uuid'
+    'hypervisor_id': 'uuid',
+    'is_hypervisor': 'true'
 }
 
 
@@ -113,7 +115,6 @@ class TestXenConfigSection(TestBase):
         self.init_virt_config_section()
         # Supported filter
         self.xen_config['filter_hosts'] = '*.company.com, *.company.net'
-        self.xen_config['filter_type'] = 'wildcards'
         # Unsupported filters
         self.xen_config['filter_host_parents'] = 'host_parents'
         self.xen_config['exclude_host_parents'] = 'host_parents'
@@ -136,7 +137,7 @@ class TestXen(TestBase):
 
     def setUp(self):
         config = self.create_config(name='test', wrapper=None, type='xen', server='localhost', username='username',
-                        password='password', owner='owner')
+                        password='password', owner='owner', env='env')
         self.xen = Virt.from_config(self.logger, config, Datastore(), interval=DefaultInterval)
 
     def run_once(self, queue=None):
@@ -227,7 +228,6 @@ class TestXen(TestBase):
                 Hypervisor.CPU_SOCKET_FACT: '1',
                 Hypervisor.HYPERVISOR_TYPE_FACT: 'XenServer',
                 Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
-                Hypervisor.SYSTEM_UUID_FACT: expected_hypervisorId
             }
         )
         self.xen._prepare()
@@ -284,7 +284,6 @@ class TestXen(TestBase):
                     Hypervisor.CPU_SOCKET_FACT: '1',
                     Hypervisor.HYPERVISOR_TYPE_FACT: 'XenServer',
                     Hypervisor.HYPERVISOR_VERSION_FACT: '1.2.3',
-                    Hypervisor.SYSTEM_UUID_FACT: expected_hypervisorId + str(i)
                 }
             ) for i in range(3)]
         self.xen._prepare()
